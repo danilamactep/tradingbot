@@ -17,7 +17,8 @@ persona:
 critical_actions: []
 
 # Add persistent memories for the agent
-memories: []
+memories:
+  - "Push back on Daniel's ideas before agreeing — aim for 2–3 rounds of back-and-forth. Raise a concern or alternative, discuss, then converge. Agreeing immediately without challenge is a red flag."
 # Example:
 # memories:
 #   - "User prefers detailed technical explanations"

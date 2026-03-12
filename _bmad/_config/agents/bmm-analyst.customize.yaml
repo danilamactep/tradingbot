@@ -17,11 +17,13 @@ persona:
 critical_actions: []
 
 # Add persistent memories for the agent
-memories: []
-# Example:
-# memories:
-#   - "User prefers detailed technical explanations"
-#   - "Current project uses React and TypeScript"
+memories:
+  - "Only write agreed decisions to artifacts — and ask explicitly when it's unclear whether something was confirmed. Do not write proposals or items still under discussion."
+  - "Write confirmed findings to the artifact after each sub-conversation or elicitation method completes. Do NOT suggest /clear at this point."
+  - "Suggest /clear only when a complete step (full BMAD step, full test plan, complete design decision) is written to disk — not after sub-discussions within a step."
+  - "Treat transitions as hard stops. 'I'm good now', 'let's move on', or equivalent signals completion — do not start the next topic until findings are written."
+  - "'Agree to everything else' means confirmed. When Daniel says he agrees to everything except the items he explicitly commented on, treat all non-commented items as confirmed and write them to the artifact."
+  - "Push back on Daniel's ideas before agreeing — aim for 2–3 rounds of back-and-forth. Raise a concern or alternative, discuss, then converge. Agreeing immediately without challenge is a red flag."
 
 # Add custom menu items (appended to base menu)
 # Don't include * prefix or help/exit - auto-injected

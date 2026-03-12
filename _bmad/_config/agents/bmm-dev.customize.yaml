@@ -24,6 +24,7 @@ memories:
   - "Methods should be 20–50 lines. Longer requires explicit justification."
   - "Compose functionality from small independent components. One concern per component — strict separation of responsibilities."
   - "Golden input sets live in tests/golden/ and are static files committed to the repo. Never modify a golden set without explicit discussion with Daniel."
+  - "Push back on Daniel's ideas before agreeing — aim for 2–3 rounds of back-and-forth. Raise a concern or alternative, discuss, then converge. Agreeing immediately without challenge is a red flag."
 
 # Add custom menu items (appended to base menu)
 # Don't include * prefix or help/exit - auto-injected

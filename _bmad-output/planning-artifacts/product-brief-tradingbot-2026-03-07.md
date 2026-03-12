@@ -11,11 +11,11 @@ author: Daniel
 
 ## 1. Problem Statement
 
-Daniel is an intermediate developer-trader who has been trading for several years but losing money. The root cause (via 5 Whys analysis) is not a bad strategy — it is the **absence of a feedback loop**. Without tracking individual trades and comparing actual decisions against systematic recommendations, emotional overrides go unmeasured and unlearned-from. The system's purpose is to make emotional trading decisions visible and measurable.
+Daniel is an intermediate developer-trader who has been trading for several years but losing money. The root cause (via 5 Whys analysis) is not a bad strategy — it is the **absence of evidence to reason from**. Without accumulated proof that the system's judgment is reliable, decisions default to intuition rather than data. Overrides fill the gap left by absent confidence. The system's purpose is to automate the collection of that evidence and make every decision a reasoned one.
 
-**North star: Accountability over automation.**
+**North star: Evidence over intuition — reasoned decisions, earned automation.**
 
-> Visibility is necessary but not sufficient. The system surfaces the cost of emotional decisions — the feedback loop closes only when Daniel acts on what he sees. The nightly review is designed to make ignoring the data feel worse than engaging with it.
+> The nightly review exists to give Daniel the evidence he needs to trust tomorrow's recommendation. Confidence in the system is built one reasoned decision at a time.
 
 ### Why Not an Existing Tool?
 
@@ -40,7 +40,7 @@ A personal, offline Python toolkit that:
 4. Generates nightly reviews that Daniel must actively engage with
 5. Earns the right to auto-execute only after proving itself
 
-The system is not a black box. Daniel retains full control. The system's job is to make the cost of emotional decisions undeniable.
+The system is not a black box. Daniel retains full control. The system's job is to accumulate evidence of its own reliability — so that over time, trusting it becomes the reasoned choice.
 
 ---
 
@@ -48,8 +48,8 @@ The system is not a black box. Daniel retains full control. The system's job is 
 
 | Principle | Detail |
 |-----------|--------|
-| Accountability first | The journal and override tracker are more important than the strategy engine |
-| Minimal friction, maximum honesty | Nightly review must be fast; skipping must feel worse than doing it |
+| Evidence first | The journal and override tracker exist to build a proof record — not to catch bad behavior, but to answer: does the system's judgment outperform mine yet? |
+| Minimal friction, maximum clarity | Nightly review must be fast; every session should leave Daniel with clearer evidence to reason from |
 | Earned autonomy | `auto_execute` is gated behind a go-live readiness report |
 | Boring technology | Python, SQLite, file I/O — no cloud, no streaming, no concurrency |
 | Audit trail everything | Every recommendation includes a full JSON reasoning snapshot |
@@ -129,52 +129,7 @@ The Rebalancing Calculator was nearly deferred but is required for MVP because: 
 - Config version is linked to each trade for full backtest traceability
 - **Config hash enforcement**: YAML config is hashed at recommendation time; hash stored alongside version string. On load, hash is recomputed — mismatch is a hard failure.
 
-**Core abstractions:**
-```python
-@dataclass
-class Metric:
-    name: str
-    def calculate(self, snapshot: MarketSnapshot) -> float: ...
-
-@dataclass
-class Indicator:
-    name: str
-    def evaluate(self, metrics: dict[str, float]) -> bool: ...  # threshold from YAML config
-
-@dataclass
-class Signal:
-    name: str
-    indicators: list[Indicator]
-    def triggered(self, states: dict[str, bool]) -> bool: ...
-    def action(self) -> str: ...  # 'buy' | 'sell' | 'hold' | 'no-action'
-
-@dataclass
-class Rule:
-    name: str
-    condition: Callable[[RuleContext], bool]
-    message: str
-    severity: str  # 'info' | 'warning' | 'block'
-
-@dataclass
-class RuleContext:
-    snapshot: MarketSnapshot
-    metrics: dict[str, float]
-    journal: JournalReader  # read-only SQLite wrapper
-
-class Strategy:
-    name: str
-    metrics: list[Metric]
-    indicators: list[Indicator]
-    signals: list[Signal]
-    rules: list[Rule]
-
-    def evaluate(self, snapshot: MarketSnapshot) -> Recommendation:
-        metric_values = {m.name: m.calculate(snapshot) for m in self.metrics}
-        indicator_states = {i.name: i.evaluate(metric_values) for i in self.indicators}
-        signal = next((s for s in self.signals if s.triggered(indicator_states)), None)
-        ctx = RuleContext(snapshot=snapshot, metrics=metric_values, journal=...)
-        # apply rules, build Recommendation ...
-```
+_Core class signatures (`Metric`, `Indicator`, `Signal`, `Rule`, `RuleContext`, `Strategy`) to be fully specified in the architecture doc._
 
 **Strategy dry run mode (MVP priority — not a dev utility):**
 - Feed one day's OHLCV, see the full recommendation output
@@ -192,76 +147,11 @@ shares = (portfolio_value × 0.02) / (entry - stop)
 
 ### 5.3 Data Model
 
-**Key dataclasses:**
-```python
-@dataclass
-class MarketContext:
-    as_of_date: date
-    mode: str                    # 'replay' | 'paper' | 'live'
-    spy_daily_return: float
-    vix_level: float
-    portfolio_value: float       # cash + cost of open positions
-    available_cash: float
-    total_capital_at_risk: float
-    capital_at_risk_pct: float
-    all_positions: list[Position]
-
-@dataclass
-class MarketSnapshot:
-    ticker: str
-    ohlcv: pd.DataFrame          # 220 validated trading days
-    reference_index: str         # e.g., "NLR", "SOXX", "QQQ"
-    reference_ohlcv: pd.DataFrame
-    position: Position | None
-    market: MarketContext
-
-@dataclass
-class Recommendation:
-    action: str                  # 'buy' | 'sell' | 'hold' | 'no-action'
-    entry: float
-    stop: float
-    target: float
-    risk_reward: float
-    stop_distance_pct: float
-    momentum_5d: float
-    momentum_20d: float
-    reference_index_return: float
-    relative_strength: float     # ticker vs reference index
-    signal_description: str
-    rules_warned: list[str]
-    rules_blocked: list[str]
-    is_persistent: bool          # same recommendation 3+ consecutive days
-    is_high_confidence: bool     # signal combo with above-average win rate
-    reasoning: dict              # structured reasoning for audit trail
-```
+_Key dataclasses (`MarketContext`, `MarketSnapshot`, `Recommendation`, `Position`) to be fully specified in the architecture doc. Key fields: `MarketSnapshot` carries 220 days of OHLCV + reference index data + portfolio context. `Recommendation` carries action, entry/stop/target, R/R, momentum, relative strength, rule warnings, persistence flag, and a full reasoning dict for audit trail._
 
 **Unified portfolio config (`config/portfolio.yaml`):**
 
-Tickers and portfolio allocations are unified in a single file — `tickers.yaml` is removed. All instrument definitions live in `portfolio.yaml`. Simulation can use a separate portfolio file (`--portfolio sim_portfolio.yaml`) to test different compositions without touching the live config.
-
-```yaml
-portfolio:
-  starting_capital: 50000     # source of truth for cash baseline; overridable per simulation
-  stock_allocation_cap: 0.02  # hard cap per ticker — policy applied to all stock instruments
-
-  instruments:
-    VUG:
-      allocation: 0.70        # target allocation of total portfolio
-      stop: ytd_protection    # presence of stop field → ETF, allocation-based sizing
-
-    TLT:
-      allocation: 0.25
-      stop: trailing_15pct
-
-    AAPL:
-      reference_index: QQQ   # presence of reference_index → stock, ATR sizing, cooldown rules
-
-    OKLO:
-      reference_index: NLR
-
-    NVDA:
-      reference_index: SOXX
-```
+Tickers and portfolio allocations are unified in a single file — `tickers.yaml` is removed. All instrument definitions live in `portfolio.yaml`. Simulation can use a separate portfolio file (`--portfolio sim_portfolio.yaml`) to test different compositions without touching the live config. See `docs/data-model-sketch.md` for the full YAML structure.
 
 **Instrument type derivation** — `type` field is not stored; behavior is derived at runtime:
 - `reference_index` present → stock: ATR-based sizing, fixed stop, 5-day re-entry cooldown
@@ -286,53 +176,22 @@ portfolio_value = cash + capital_at_risk
 - Migrations managed by Alembic
 - JSON stored for audit trail snapshots
 
-**Audit trail JSON (stored in SQLite per recommendation):**
-```json
-{
-  "snapshot_id": "AAPL_2026-03-09",
-  "source_file": "historical_prices/AAPL.csv.gz",
-  "source_hash": "sha256:a3f2c1d4...",
-  "date_range": {"from": "2025-06-01", "to": "2026-03-09"},
-  "rsi_14": 28.3,
-  "ma_50": 181.20,
-  "ma_200": 175.40,
-  "atr_14": 8.20,
-  "atr_50": 7.10,
-  "vix": 22.1,
-  "spy_1d_return": -0.012,
-  "sector_5d_return": -0.032,
-  "capital_at_risk_pct": 0.038,
-  "rules_warned": ["high_vix"],
-  "rules_blocked": []
-}
-```
+**Audit trail JSON** — per-recommendation snapshot stored in SQLite: ticker, source file + hash, date range, RSI, MAs, ATR, VIX, SPY return, sector return, capital-at-risk pct, rules warned/blocked. See `docs/data-model-sketch.md` for full structure.
 
-**Git tagging for backtest traceability:**
-```
-git tag backtest-AAPL-2026-03-09
-```
+**Git tagging for backtest traceability:** `git tag backtest-AAPL-2026-03-09`
 
-**JournalReader (read-only SQLite wrapper):**
-```python
-class JournalReader:
-    def win_rate(self, ticker: str, last_n: int) -> float: ...
-    def consecutive_losses(self, ticker: str) -> int: ...
-    def signal_win_rate(self, signal_name: str, last_n: int) -> float: ...
-    def override_rate(self, last_n: int) -> float: ...
-    def override_quality_score(self, last_n: int) -> float: ...  # % of overrides that beat system rec
-    def override_pnl_by_tag(self, last_n: int) -> dict[str, float]: ...  # avg P&L delta per tag
-```
+**JournalReader** (read-only SQLite wrapper) — methods: `win_rate`, `consecutive_losses`, `signal_win_rate`, `override_rate`, `override_quality_score`, `override_pnl_by_tag`. See `docs/data-model-sketch.md` for full interface.
 
 ### 5.5 Override Tracking
 
-- Each override stored as a record in the journal (not a parallel P&L stream)
-- P&L delta (actual vs system) derived at report time from override records
+- Each override is a data point in the central question: does the system's judgment outperform mine yet? Stored as a record in the journal (not a parallel P&L stream).
+- P&L delta (actual vs system) derived at report time from override records — the answer accumulates over time
 - **Override tags** (one required) + **comment** (always required):
   - `N` — News/Event (any external catalyst: macro, earnings, sector move)
   - `R` — Risk (portfolio-level concern: position size, drawdown, capital at risk)
   - `G` — Gut (intuition or any reason that doesn't fit N or R)
 - Comment captures reasoning in Daniel's own words — essential for recollection and pattern analysis
-- **Skip log for sell recommendations** — when the system recommends SELL on an open position and Daniel does not act, that skip is recorded with reason and tags. Skipped buy signals on unpositioned tickers are NOT recorded (noise). Post-MVP: evaluate tracking skipped buys as part of missed opportunity report.
+- **Skip log for sell recommendations** — when the system recommends SELL on an open position and Daniel does not act, that skip is recorded with reason and tags. Skipped buy signals on unpositioned tickers are NOT recorded (noise).
 - **Win rate and override stats** — surfaced from the first closed position / first override respectively. No minimum sample floor; "n/a — insufficient history" shown only when zero records exist.
 - **Dry-run output parity** — `strategy.py dry-run` must produce recommendation output identical in format to the nightly review staging phase. Trust depends on consistency.
 - **Override tag performance breakdown**: reports show P&L delta *per tag* (N/R/G), not just aggregate. Terminal bar format: `G ████████ 60% (-6.1%)` `N ███ 20% (+1.2%)`
@@ -373,11 +232,7 @@ The nightly command has two sequential phases in live mode:
 
    System writes all outcomes to an internal CSV as the audit record. Daniel never edits the CSV directly.
 
-   **Post-MVP**: Automate outcome capture (broker API integration or equivalent). Capture broker spread (delta between recommended price and execution price).
-
 2. **Staging phase**: present tonight's recommendations for approval, stage approved orders for tomorrow. Recommendations are ranked by `risk_reward × historical_win_rate` — top opportunities shown first. If yesterday's order expired and conditions persist, the strategy engine recommends again independently — surfaced via the `is_persistent` flag.
-
-   **Post-MVP**: Option to request additional recommendations beyond default display.
 
    **Recommendation ranking formula (MVP):**
    ```
@@ -387,8 +242,7 @@ The nightly command has two sequential phases in live mode:
    - Two alternative scores computed alongside but not used for ranking (MVP):
      - **EV**: `(win_rate × avg_win) - (loss_rate × avg_loss)` — accounts for magnitude
      - **Conviction**: `R/R × signal_strength × (1 - capital_at_risk_pct)` — incorporates portfolio state
-   - All three scores surfaced in periodic reports for formula comparison over time
-   - **Post-MVP**: switch ranking formula once data shows which predictor is strongest
+   - All three scores surfaced in periodic reports for formula comparison over time — ranking formula switches post-MVP once data shows which predictor is strongest
 
 Paper and replay modes skip the CSV input entirely — fills are simulated via fill simulation rules (section 5.9). Override tracking applies identically in paper mode as in live mode.
 
@@ -463,18 +317,7 @@ Waiting for VUG re-entry signal. TLT will re-enter paired with VUG.
 
 ### 5.7 Position Scorecard (Trim Decisions)
 
-```python
-@dataclass
-class PositionScore:
-    ticker: str
-    unrealized_pnl_pct: float
-    distance_to_target_pct: float
-    days_held: int
-    momentum_5d: float
-    momentum_20d: float
-    reference_index_return: float
-    relative_strength: float
-```
+Fields: `ticker`, `unrealized_pnl_pct`, `distance_to_target_pct`, `days_held`, `momentum_5d`, `momentum_20d`, `reference_index_return`, `relative_strength`. See `docs/data-model-sketch.md` for full `PositionScore` dataclass.
 
 ### 5.8 Autonomy Progression (Four Phases)
 
@@ -597,13 +440,7 @@ The system generates recommendations and stop alerts. Daniel executes all orders
 | Bonds (TLT) | 25% | Trailing | 15% from purchase high |
 | Active trades | 5% | Fixed | Per-trade (ATR-based, 2% risk rule) |
 
-**Index trailing stop formula:**
-```python
-if ytd_return > 0:
-    stop = entry_price * (1 + ytd_return * 0.50)  # protect 50% of gains
-else:
-    stop = entry_price * 0.97  # 3% max loss floor
-```
+**Index trailing stop formula:** if `ytd_return > 0`: protect 50% of gains (`entry × (1 + ytd_return × 0.50)`); else: 3% max loss floor (`entry × 0.97`). See `docs/data-model-sketch.md`.
 
 **Bond stop**: 15% trailing stop from purchase high. Rationale: TLT's normal rate-driven fluctuations are ±5-10%; 15% catches structural regime failures (e.g., 2022 rate hike cycle) without triggering on noise.
 
@@ -790,47 +627,7 @@ When `fed_stance = hiking` or `TNX_20d_momentum > 0`: hold BIL instead of TLT
 
 ---
 
-## 12. Development Practices
-
-### TDD — Test-Driven Development
-
-All development follows TDD across the board. The cycle is:
-
-1. **Present test summary** — brief description of what each test validates. No inputs/outputs unless absolutely critical for understanding the test purpose. High-level approach only.
-2. **Discuss and agree** — Daniel reviews and agrees before any implementation begins.
-3. **Implement** — code written after agreement on tests.
-
-Same cycle applies to later modifications: summary → discuss → agree → implement.
-
-### Coding Standards
-
-- **Plan first**: present implementation plan → discuss → agree → implement
-- **Testability**: prefer designs that are naturally testable (TDD enforces this)
-- **Readability**: methods should be 20–50 lines. Longer methods require explicit justification.
-- **Composition**: several small independent components compose into full functionality
-- **Single responsibility**: each component does one thing. Separation of concerns enforced throughout.
-
-### Regression Testing — Golden Input Sets
-
-Static files committed to the repo. Adding to the golden set is an explicit decision visible in git history.
-
-**Priority golden sets:**
-
-| Set | Purpose |
-|-----|---------|
-| RSI values | Validate against TradingView exports for known dates |
-| ATR values | Critical — position sizing depends on correctness |
-| Moving averages | Straightforward indicator validation |
-| Fill simulation outputs | Deterministic — no external dependency |
-| Portfolio state derivation | End-to-end: known trade history → expected positions + cash |
-
-**First two golden tests to write** (already required by the brief):
-1. `PRAGMA integrity_check` — journal integrity on startup
-2. Lookahead bias assertion — `max(ohlcv.index) <= as_of_date` across all `MarketSnapshot` construction paths
-
----
-
-## 13. Elicitation Methods Completed
+## 12. Elicitation Methods Completed
 
 | Method | Key Findings |
 |--------|-------------|

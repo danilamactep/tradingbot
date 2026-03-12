@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Session Startup — Load BMAD Context
+
+At the start of every conversation involving BMAD work (including after `/clear`), automatically invoke `/bmad-help` before doing anything else. This orients the session by detecting the current phase, completed steps, and what comes next.
+
 ## Project Status
 
 This is a **new project** (tradingbot) in early planning/setup. No application source code exists yet — only the BMAD AI development framework has been initialized.
@@ -64,19 +68,39 @@ These apply during all implementation work.
 - Golden input sets are **static files committed to the repo**.
 - Never modify a golden set without explicit discussion.
 
+## Collaboration Style
+
+**Push back on ideas — don't just agree.** When Daniel proposes a direction, approach, or decision, challenge it before accepting it. Aim for 2–3 rounds of back-and-forth: raise a concern or alternative, discuss, then converge. Agreeing on the first response is a red flag. This applies to design decisions, scope choices, architectural approaches, and planning assumptions — not just implementation details.
+
 ## Session Hygiene Rules
 
 These apply to all sessions — BMAD elicitation, planning, coding, and design.
 
 1. **Only write agreed decisions — and ask when unclear.** After any meaningful unit of work completes (elicitation method, test plan, architecture decision, implementation plan), write confirmed decisions to the active artifact. Do not write proposals or items still under discussion. If it is unclear whether something was confirmed, ask explicitly before writing or dropping it.
-2. **Suggest `/clear` after writing.** Once findings are written to file, suggest Daniel run `/clear` to free context. Do not start the next unit of work until this happens.
+2. **Write to file after each sub-conversation; suggest `/clear` only at step boundaries.** After each sub-discussion or elicitation method completes, write the confirmed findings to the active artifact. Do NOT suggest `/clear` at this point — only suggest it when the full BMAD step (or full test plan / design decision) is written to disk. This keeps progress safe incrementally while preventing premature context loss mid-step.
 3. **Treat transitions as hard stops.** "I'm good now," "let's move on," or equivalent signals completion — do not start the next topic until findings are written and `/clear` is suggested.
 4. **"Agree to everything else" means confirmed.** When Daniel says he agrees to everything except the items he explicitly commented on, treat all non-commented items as confirmed and write them to file.
 
+### Keeping BMAD agents in sync
+
+Whenever this file (CLAUDE.md) is modified, cross-check all agent customize files under `_bmad/_config/agents/` and propagate any relevant changes to their `memories` arrays. Each agent should carry the rules that apply to its role:
+- **Planning agents** (pm, sm, architect, analyst): session hygiene rules
+- **Implementation agents** (dev, qa, quick-flow-solo-dev): TDD, coding standards, regression testing rules
+- **All agents**: any rule that applies universally regardless of phase
+
 ### When to suggest `/clear`
 
-- After each elicitation method (BMAD workflows)
-- After test plan is agreed (coding)
-- After architecture or design is agreed (coding)
-- After implementation plan is agreed (coding)
-- After any section of the PRD, architecture doc, or story is finalized
+- After a **complete BMAD step** is fully written to the artifact (not after sub-discussions within a step)
+- After test plan is agreed and written (coding)
+- After architecture or design is agreed and written (coding)
+- After implementation plan is agreed and written (coding)
+
+### Restoring BMAD context after `/clear`
+
+After `/clear`, BMAD context is fully recoverable from disk. To restore:
+
+1. Re-invoke the active workflow command (e.g., `/bmad-bmm-create-prd`)
+2. The workflow detects `stepsCompleted` in the artifact frontmatter and routes to `step-01b-continue`
+3. `step-01b-continue` reloads all `inputDocuments` listed in the frontmatter and resumes from the last completed step
+
+No manual context restoration needed — the workflow handles it automatically.

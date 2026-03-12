@@ -1,5 +1,5 @@
 ---
-stepsCompleted: [step-01-init, step-02-discovery, step-02b-vision, step-02c-executive-summary, step-03-success-elicitation-in-progress]
+stepsCompleted: [step-01-init, step-02-discovery, step-02b-vision, step-02c-executive-summary, step-03-success]
 classification:
   projectType: cli_tool
   domain: fintech
@@ -39,9 +39,7 @@ Core insight: the problem is not a bad strategy. The problem is the absence of a
 | Complexity | High — financial data integrity, no-lookahead invariant, strategy version traceability, fill simulation accuracy |
 | Project Context | Greenfield |
 
-## Success Criteria — Elicitation Findings
-
-> Pre-mortem completed. Anti-Goals in progress. This section will be finalized once Anti-Goals is complete.
+## Success Criteria
 
 ### Go-Live Criteria
 
@@ -63,3 +61,14 @@ Core insight: the problem is not a bad strategy. The problem is the absence of a
 
 - **Lag indicators** (outcome): System P&L vs benchmark, R-multiple trend, win rate trend, override impact p50
 - **Lead indicator** (behavioral, meaningful earlier): nightly review completion rate
+
+## Anti-Goals
+
+The following are explicit out-of-scope boundaries. tradingbot will never become:
+
+1. **Not a broker integration** — no automatic trade execution, no brokerage API connections. All execution is manual. Autonomy (if ever enabled) is an explicit post-MVP decision, not a default.
+2. **Not a screener or signal alert system** — no proactive market scanning or push notifications. Recommendations are generated within the nightly review cycle only.
+3. **Not a social or shared tool** — no multi-user support, no cloud sync, no sharing of journals or strategies. Personal and offline, always.
+4. **Not a financial advisor** — makes no claim to provide generalizable investment advice. It is a personal decision-tracking tool for Daniel's use only.
+5. **Not a data provider** — consumes market data Daniel provides (e.g., OHLCV from a known source); does not own, replace, or scrape market data.
+6. **Not a general-purpose portfolio tracker** — tracks trades made within the strategy. Legacy positions (held before the system existed) are out of scope for MVP.
