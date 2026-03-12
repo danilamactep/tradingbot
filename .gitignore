@@ -1,0 +1,17 @@
+# BMAD framework (bulk ignored, keep project configs)
+_bmad/**
+!_bmad/_config/
+!_bmad/_config/agents/
+!_bmad/_config/agents/*.customize.yaml
+!_bmad/_memory/
+!_bmad/_memory/config.yaml
+!_bmad/bmm/config.yaml
+!_bmad/core/config.yaml
+
+# Claude
+.claude/**
+.claude/_tmp/
+
+# Agents
+.agents/**
+.DS_Store
