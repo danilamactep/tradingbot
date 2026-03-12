@@ -1,0 +1,860 @@
+---
+stepsCompleted: [1, 2]
+inputDocuments: []
+date: 2026-03-07
+author: Daniel
+---
+
+# Product Brief: tradingbot
+
+---
+
+## 1. Problem Statement
+
+Daniel is an intermediate developer-trader who has been trading for several years but losing money. The root cause (via 5 Whys analysis) is not a bad strategy — it is the **absence of a feedback loop**. Without tracking individual trades and comparing actual decisions against systematic recommendations, emotional overrides go unmeasured and unlearned-from. The system's purpose is to make emotional trading decisions visible and measurable.
+
+**North star: Accountability over automation.**
+
+> Visibility is necessary but not sufficient. The system surfaces the cost of emotional decisions — the feedback loop closes only when Daniel acts on what he sees. The nightly review is designed to make ignoring the data feel worse than engaging with it.
+
+### Why Not an Existing Tool?
+
+Stonk Journal (app.stonkjournal.com) was explicitly evaluated and rejected. It lacks:
+- Stop loss as a first-class field
+- Override tracking with reason tags
+- System-recommended vs actual P&L comparison
+- Strategy version linking per trade
+- Nightly conversation logs
+
+A custom system is necessary.
+
+---
+
+## 2. Product Vision
+
+A personal, offline Python toolkit that:
+
+1. Recommends trades based on a coded, versioned strategy
+2. Tracks every decision Daniel makes — including overrides
+3. Compares actual P&L vs what the system would have produced
+4. Generates nightly reviews that Daniel must actively engage with
+5. Earns the right to auto-execute only after proving itself
+
+The system is not a black box. Daniel retains full control. The system's job is to make the cost of emotional decisions undeniable.
+
+---
+
+## 3. Core Philosophy
+
+| Principle | Detail |
+|-----------|--------|
+| Accountability first | The journal and override tracker are more important than the strategy engine |
+| Minimal friction, maximum honesty | Nightly review must be fast; skipping must feel worse than doing it |
+| Earned autonomy | `auto_execute` is gated behind a go-live readiness report |
+| Boring technology | Python, SQLite, file I/O — no cloud, no streaming, no concurrency |
+| Audit trail everything | Every recommendation includes a full JSON reasoning snapshot |
+
+---
+
+## 4. MVP Scope
+
+### MVP Components
+
+| Component | Notes |
+|-----------|-------|
+| **Journal** | SQLite + Alembic, trade recording, override tracking |
+| **Strategy Engine** | Python plugin class + versioned YAML config; metrics calculated internally |
+| **Data Fetcher** | yfinance automation included — manual CSV management is too painful |
+| **Portfolio Manager** | Required for position sizing, capital-at-risk tracking, trim logic |
+| **Nightly Review** | Terminal prompts, recommendation display, override capture, audit file output |
+| **Replay Mode** | Fill simulation, automated replay across historical data |
+| **Rebalancing Calculator** | MVP required — backtest simulation must model quarterly rebalancing events to produce accurate portfolio progression; prices fetched automatically via Data Fetcher |
+
+### Post-MVP (explicitly deferred)
+
+- **Confidence signal (red/yellow/green)** — visual confidence rating per recommendation abstracted from the ranking score. Enables faster scanning without computing R/R and win rate mentally. Categorization criteria need further discussion before implementation.
+- **LLM-assisted journal analysis** — feed journal data to an LLM (Claude or similar) to generate: (a) plain-language trading health narrative ("clinical summary" of behavior patterns, override trends, win rate trajectory); (b) guided weekly retrospective with targeted questions based on actual trade history. Rule-based templates are the MVP-adjacent fallback; LLM is the target. TOON format (already noted) is the natural exchange format for this integration. Data scoping and privacy considerations to be defined before implementation.
+- **Pre-nightly checklist** — short prompt before recommendation review: macro conditions, earnings this week for held positions, VIX level. Prompted by system, answered by Daniel. Checklist items to be defined.
+- **Add / reduce position actions** — `add` and `reduce` as first-class strategy actions alongside `buy / sell / hold / no-action`. Requires defining skip logging behaviour for each.
+- **"Ask for more" recommendations** — option to request additional recommendations beyond default display in nightly staging phase.
+- **Missed opportunity tracking** — store non-acted "buy" signals for tickers defined in `config/portfolio.yaml` instruments list to enable a report showing what the system would have earned on signals Daniel never took. Bounded scope prevents noise.
+- **Cancelled order tracking** — store unfilled/cancelled staged orders to help calibrate strategy entry thresholds (e.g., entry limits frequently missed by small margins suggest threshold needs tightening).
+- **Execution deviation tracking** — capture slippage (set price vs actual Fidelity fill price) per trade. Schema: `set_entry`, `actual_entry`, `set_stop`, `actual_stop`, `set_target`, `actual_target`. Deviation computed at report time. Deferred due to nightly review friction cost; trivial to add via Alembic migration.
+- **Market regime labels** — tag fetched data with bull/bear/sideways market state and rate direction (rising/falling). Enables strategy performance analysis by regime.
+- **Pre-market entry modification tracking** — "modify" action in nightly review should record which field was changed (entry/stop/target/size). Enables Daniel to see pre-market adjustment habit reflected in data over time.
+- **Legacy position management** — positions held before the system was set up have no entry recommendation, no override history from inception, and break the feedback loop. Excluded from MVP. Post-MVP: define onboarding flow for pre-existing positions (manual journal entry with no system recommendation baseline).
+- **Broker automation** — automate outcome capture via broker API integration, replacing manual settlement prompts.
+- **Live trading / `auto_execute`** — gated behind go-live criteria (section 5.10).
+- Scheduled runner (cron wrapper around nightly script — deployment concern, not a component)
+
+### No lookahead bias (invariant across all modes)
+
+No component has knowledge of future prices — ever. In replay and multi-period simulation modes, the system feeds OHLCV data one day at a time, exactly as it would in live mode. `MarketSnapshot.ohlcv` contains only up to `min_history_days` trading days (default 220) up to and including `as_of_date`. The day's close price is never available until settlement the following day. This invariant must be enforced at the data feed layer, not assumed by individual components.
+
+**Regression test required**: an automated test must assert `max(ohlcv.index) <= as_of_date` across all code paths that construct `MarketSnapshot`. A design invariant without a test is not an invariant.
+
+### MVP scope rationale
+
+The Rebalancing Calculator was nearly deferred but is required for MVP because: without modeling quarterly rebalancing in multi-period simulation, portfolio progression numbers are inaccurate (static 70/25/5 allocation is unrealistic). Re-running simulations after adding it post-MVP would invalidate earlier decisions. The simulation logic and operational report (`--preview`) share enough code that splitting them adds complexity without benefit.
+
+---
+
+## 5. Components
+
+### 5.1 Data Fetcher
+
+- **Library**: `yfinance` with `auto_adjust=True` (handles splits/dividends automatically)
+- **Storage**: gzipped CSVs (`historical_prices/AAPL.csv.gz`) — append-only, excluded from git
+- **Re-fetch trigger**: `ticker.actions` checked for new corporate events since last fetch
+- **Corporate event handling**: M&A, delistings, reverse splits detected as data anomalies — flagged for manual review
+- **Pluggable design**: fetcher is a replaceable component behind an interface
+- **Validation**: Minimum trading days required is defined per strategy in YAML (`min_history_days`); default 220 (covers MA-200 + calendar buffer). Uses `pandas_market_calendars` for calendar validation.
+- **New ticker onboarding**: `min_history_days` (from strategy YAML) required before a ticker is evaluated. If history is missing or insufficient, the fetcher attempts to fetch the full history automatically. If `min_history_days` still cannot be satisfied after fetch — hard failure. No partial evaluation.
+- **Scope**: fetches all instruments + their reference indices defined in `config/portfolio.yaml` + ^TNX (10-year Treasury yield, used for TLT re-entry rate direction signal)
+
+### 5.2 Strategy Engine
+
+**Four-layer architecture:**
+
+| Layer | Responsibility | Testable against |
+|-------|---------------|-----------------|
+| `Metric` | Raw computed number from OHLCV. No interpretation. | TradingView golden inputs |
+| `Indicator` | Evaluates metric(s) against threshold → boolean/state. Thresholds live in YAML config. | Known metric values |
+| `Signal` | Composes indicators → trade action (buy/sell/hold/no-action). | Known indicator states |
+| `Rule` | Filters/modifies signal using journal + market context. | Known journal/market context |
+| `Strategy` | Thin orchestrator — wires metrics → indicators → signals → rules → `Recommendation`. | End-to-end |
+
+- **Layer 1**: Python classes implementing each layer
+- **Layer 2**: Versioned YAML parameter config file (thresholds, weights, periods) — used by Indicators
+- Config version is linked to each trade for full backtest traceability
+- **Config hash enforcement**: YAML config is hashed at recommendation time; hash stored alongside version string. On load, hash is recomputed — mismatch is a hard failure.
+
+**Core abstractions:**
+```python
+@dataclass
+class Metric:
+    name: str
+    def calculate(self, snapshot: MarketSnapshot) -> float: ...
+
+@dataclass
+class Indicator:
+    name: str
+    def evaluate(self, metrics: dict[str, float]) -> bool: ...  # threshold from YAML config
+
+@dataclass
+class Signal:
+    name: str
+    indicators: list[Indicator]
+    def triggered(self, states: dict[str, bool]) -> bool: ...
+    def action(self) -> str: ...  # 'buy' | 'sell' | 'hold' | 'no-action'
+
+@dataclass
+class Rule:
+    name: str
+    condition: Callable[[RuleContext], bool]
+    message: str
+    severity: str  # 'info' | 'warning' | 'block'
+
+@dataclass
+class RuleContext:
+    snapshot: MarketSnapshot
+    metrics: dict[str, float]
+    journal: JournalReader  # read-only SQLite wrapper
+
+class Strategy:
+    name: str
+    metrics: list[Metric]
+    indicators: list[Indicator]
+    signals: list[Signal]
+    rules: list[Rule]
+
+    def evaluate(self, snapshot: MarketSnapshot) -> Recommendation:
+        metric_values = {m.name: m.calculate(snapshot) for m in self.metrics}
+        indicator_states = {i.name: i.evaluate(metric_values) for i in self.indicators}
+        signal = next((s for s in self.signals if s.triggered(indicator_states)), None)
+        ctx = RuleContext(snapshot=snapshot, metrics=metric_values, journal=...)
+        # apply rules, build Recommendation ...
+```
+
+**Strategy dry run mode (MVP priority — not a dev utility):**
+- Feed one day's OHLCV, see the full recommendation output
+- Used to test a new strategy config without running a full replay
+- `tradingbot strategy dry-run --ticker AAPL --date 2026-03-09`
+- **Output parity**: dry-run and nightly review staging phase share the same output formatting function — divergence is architecturally impossible, not just documented.
+
+**Position sizing (ATR-based, 2% portfolio risk rule):**
+```
+shares = (portfolio_value × 0.02) / (entry - stop)
+```
+- `portfolio_value` = cash balance + cost of open positions (not mark-to-market) — used for sizing only
+- `unrealized_pnl` = mark-to-market value of open positions minus cost basis — visible in nightly reports and portfolio snapshot for awareness; never used for sizing or cap calculations
+- When capital-at-risk cap is reached: trim existing position first (ranked by target proximity → momentum → hold time), then size down new trade to remaining headroom
+
+### 5.3 Data Model
+
+**Key dataclasses:**
+```python
+@dataclass
+class MarketContext:
+    as_of_date: date
+    mode: str                    # 'replay' | 'paper' | 'live'
+    spy_daily_return: float
+    vix_level: float
+    portfolio_value: float       # cash + cost of open positions
+    available_cash: float
+    total_capital_at_risk: float
+    capital_at_risk_pct: float
+    all_positions: list[Position]
+
+@dataclass
+class MarketSnapshot:
+    ticker: str
+    ohlcv: pd.DataFrame          # 220 validated trading days
+    reference_index: str         # e.g., "NLR", "SOXX", "QQQ"
+    reference_ohlcv: pd.DataFrame
+    position: Position | None
+    market: MarketContext
+
+@dataclass
+class Recommendation:
+    action: str                  # 'buy' | 'sell' | 'hold' | 'no-action'
+    entry: float
+    stop: float
+    target: float
+    risk_reward: float
+    stop_distance_pct: float
+    momentum_5d: float
+    momentum_20d: float
+    reference_index_return: float
+    relative_strength: float     # ticker vs reference index
+    signal_description: str
+    rules_warned: list[str]
+    rules_blocked: list[str]
+    is_persistent: bool          # same recommendation 3+ consecutive days
+    is_high_confidence: bool     # signal combo with above-average win rate
+    reasoning: dict              # structured reasoning for audit trail
+```
+
+**Unified portfolio config (`config/portfolio.yaml`):**
+
+Tickers and portfolio allocations are unified in a single file — `tickers.yaml` is removed. All instrument definitions live in `portfolio.yaml`. Simulation can use a separate portfolio file (`--portfolio sim_portfolio.yaml`) to test different compositions without touching the live config.
+
+```yaml
+portfolio:
+  starting_capital: 50000     # source of truth for cash baseline; overridable per simulation
+  stock_allocation_cap: 0.02  # hard cap per ticker — policy applied to all stock instruments
+
+  instruments:
+    VUG:
+      allocation: 0.70        # target allocation of total portfolio
+      stop: ytd_protection    # presence of stop field → ETF, allocation-based sizing
+
+    TLT:
+      allocation: 0.25
+      stop: trailing_15pct
+
+    AAPL:
+      reference_index: QQQ   # presence of reference_index → stock, ATR sizing, cooldown rules
+
+    OKLO:
+      reference_index: NLR
+
+    NVDA:
+      reference_index: SOXX
+```
+
+**Instrument type derivation** — `type` field is not stored; behavior is derived at runtime:
+- `reference_index` present → stock: ATR-based sizing, fixed stop, 5-day re-entry cooldown
+- `stop: ytd_protection` → index ETF: allocation-based sizing, YTD gain protection formula
+- `stop: trailing_15pct` → bond ETF: allocation-based sizing, 15% trailing stop
+
+**Portfolio state derivation** — constructed at the start of each nightly run from journal history. Never stored redundantly:
+
+```
+open positions  = all buys without a corresponding exit
+cash balance    = starting_capital - Σ(entry costs) + Σ(exit proceeds)
+capital_at_risk = Σ(cost basis of open stock positions)
+portfolio_value = cash + capital_at_risk
+```
+
+### 5.4 Journal (SQLite + Alembic)
+
+- Primary store for all trades, recommendations, overrides, and decisions
+- **Hold recommendations for open positions are stored** — every nightly recommendation for a currently held position (VUG, TLT, active trade) is journaled, including "hold". This enables bond hedge effectiveness queries (e.g., "did the system recommend selling TLT on the day VUG stopped?"). Unpositioned tickers with "no-action" recommendations are NOT stored — noise with no interpretive value.
+- **Read pattern**: read-all → compute → write-once (no concurrent access, no WAL mode needed)
+- **All writes are transactional** — every journal write is wrapped in an explicit SQLite transaction. On startup, run `PRAGMA integrity_check` and halt if journal is inconsistent.
+- Migrations managed by Alembic
+- JSON stored for audit trail snapshots
+
+**Audit trail JSON (stored in SQLite per recommendation):**
+```json
+{
+  "snapshot_id": "AAPL_2026-03-09",
+  "source_file": "historical_prices/AAPL.csv.gz",
+  "source_hash": "sha256:a3f2c1d4...",
+  "date_range": {"from": "2025-06-01", "to": "2026-03-09"},
+  "rsi_14": 28.3,
+  "ma_50": 181.20,
+  "ma_200": 175.40,
+  "atr_14": 8.20,
+  "atr_50": 7.10,
+  "vix": 22.1,
+  "spy_1d_return": -0.012,
+  "sector_5d_return": -0.032,
+  "capital_at_risk_pct": 0.038,
+  "rules_warned": ["high_vix"],
+  "rules_blocked": []
+}
+```
+
+**Git tagging for backtest traceability:**
+```
+git tag backtest-AAPL-2026-03-09
+```
+
+**JournalReader (read-only SQLite wrapper):**
+```python
+class JournalReader:
+    def win_rate(self, ticker: str, last_n: int) -> float: ...
+    def consecutive_losses(self, ticker: str) -> int: ...
+    def signal_win_rate(self, signal_name: str, last_n: int) -> float: ...
+    def override_rate(self, last_n: int) -> float: ...
+    def override_quality_score(self, last_n: int) -> float: ...  # % of overrides that beat system rec
+    def override_pnl_by_tag(self, last_n: int) -> dict[str, float]: ...  # avg P&L delta per tag
+```
+
+### 5.5 Override Tracking
+
+- Each override stored as a record in the journal (not a parallel P&L stream)
+- P&L delta (actual vs system) derived at report time from override records
+- **Override tags** (one required) + **comment** (always required):
+  - `N` — News/Event (any external catalyst: macro, earnings, sector move)
+  - `R` — Risk (portfolio-level concern: position size, drawdown, capital at risk)
+  - `G` — Gut (intuition or any reason that doesn't fit N or R)
+- Comment captures reasoning in Daniel's own words — essential for recollection and pattern analysis
+- **Skip log for sell recommendations** — when the system recommends SELL on an open position and Daniel does not act, that skip is recorded with reason and tags. Skipped buy signals on unpositioned tickers are NOT recorded (noise). Post-MVP: evaluate tracking skipped buys as part of missed opportunity report.
+- **Win rate and override stats** — surfaced from the first closed position / first override respectively. No minimum sample floor; "n/a — insufficient history" shown only when zero records exist.
+- **Dry-run output parity** — `strategy.py dry-run` must produce recommendation output identical in format to the nightly review staging phase. Trust depends on consistency.
+- **Override tag performance breakdown**: reports show P&L delta *per tag* (N/R/G), not just aggregate. Terminal bar format: `G ████████ 60% (-6.1%)` `N ███ 20% (+1.2%)`
+- **Override quality score**: % of overrides that outperformed the system recommendation, tracked over rolling 30d and 90d windows. Reported alongside aggregate override impact.
+- **Named insight**: when tag performance is asymmetric, surface a plain-language summary (e.g. "News overrides: +1.2% avg | Gut overrides: -6.1% avg — your edge is news, your drag is gut")
+
+### 5.6 Nightly Review (Terminal Prompts)
+
+The nightly command has two sequential phases in live mode:
+
+1. **Settlement phase**: Daniel reports execution outcomes via terminal prompts at the start of each nightly run. The system generates the recommendations and is the source of truth for all recommended prices. Daniel is the source of truth for execution outcomes. The system never infers execution status from OHLCV in live mode.
+
+   **Settlement prompt flow (live mode):**
+
+   For each recommendation from the previous night:
+   ```
+   AAPL was recommended yesterday. Execution price? (price / skipped / [enter] = not submitted)
+   > skipped
+   Reason: N=News/Event  R=Risk  G=Gut
+   > G
+   Comment: felt overextended given macro
+   ```
+   - `execution_price` entered → **executed** → logged as open or closed position
+   - `skipped` → logged as skip with reason + comment (applies to SELL on open positions; BUY skips are post-MVP)
+   - `[enter]` / not submitted → ignored; no journal entry (BUY recommendations only)
+   - Orders are one-day-only — no carry-forward
+
+   After recommendation outcomes, system checks OHLCV for all open positions and surfaces detected limit triggers:
+   ```
+   ⚠ AAPL — stop level $168.00 breached yesterday (low: $164.20)
+   Execution price?
+   > 168.00
+   Comment (optional): gap down overnight
+   ```
+   - System detects potential triggers from OHLCV (price crossed stop or target level) and prompts Daniel to confirm with actual execution price
+   - Daniel is the source of truth on execution price — system only detects, never assumes
+   - System also asks: `Any other triggers not listed above? (y/n)` to catch edge cases the OHLCV detection missed
+
+   System writes all outcomes to an internal CSV as the audit record. Daniel never edits the CSV directly.
+
+   **Post-MVP**: Automate outcome capture (broker API integration or equivalent). Capture broker spread (delta between recommended price and execution price).
+
+2. **Staging phase**: present tonight's recommendations for approval, stage approved orders for tomorrow. Recommendations are ranked by `risk_reward × historical_win_rate` — top opportunities shown first. If yesterday's order expired and conditions persist, the strategy engine recommends again independently — surfaced via the `is_persistent` flag.
+
+   **Post-MVP**: Option to request additional recommendations beyond default display.
+
+   **Recommendation ranking formula (MVP):**
+   ```
+   score = risk_reward × historical_win_rate(signal)
+   ```
+   - `historical_win_rate` sourced from `JournalReader.signal_win_rate(signal_name, last_n)` — defaults to 0.5 when insufficient history
+   - Two alternative scores computed alongside but not used for ranking (MVP):
+     - **EV**: `(win_rate × avg_win) - (loss_rate × avg_loss)` — accounts for magnitude
+     - **Conviction**: `R/R × signal_strength × (1 - capital_at_risk_pct)` — incorporates portfolio state
+   - All three scores surfaced in periodic reports for formula comparison over time
+   - **Post-MVP**: switch ranking formula once data shows which predictor is strongest
+
+Paper and replay modes skip the CSV input entirely — fills are simulated via fill simulation rules (section 5.9). Override tracking applies identically in paper mode as in live mode.
+
+**Missed night recovery:**
+If Daniel misses one or more nights, the system detects the gap by comparing today's date to the last journal entry date. On next run, it steps through each missed day in order (oldest first) before running tonight's review:
+- **Settlement phase**: runs normally per missed day using that day's OHLCV for stop detection
+- **Staging phase**: shows what the system would have recommended that night; Daniel reports whether anything was acted on
+- All missed-day sessions are marked `recovery_mode: true` in the journal for auditability
+- After all missed days are processed, tonight's nightly review runs as normal
+
+**Interactive replay mechanics:**
+- **Date stepping**: auto-advances after each staging phase — no manual `[n]ext` prompt required
+- **Starting capital**: read from `starting_capital` in the portfolio file passed via `--portfolio`. Each simulation config defines its own capital.
+- **Strategy config**: current config version only (MVP) — no historical config snapshot support
+- **Ambiguous exit prompt**: fires identically to live mode when open is between stop and target on the same day both limits are hit
+
+**Execution note**: The system generates recommendations and stop levels. Daniel executes all orders manually in Fidelity (MVP). Outcomes are captured via the settlement prompt flow at the start of each nightly run.
+
+**Terminal prompt format — tiered display:**
+
+Action line is always shown first. Signals follow. Context is available on demand via `[d]` to keep the prompt scannable.
+
+```
+# Nightly Review — 2026-03-09
+
+## AAPL — BUY RECOMMENDED ★ PERSISTENT (3 days)
+Entry: $182.50 | Stop: $168.00 | Target: $210.00 | R/R: 3.2:1
+Override impact (last 30 days): -4.2% vs system
+
+Action: approve / skip / modify / [d]etail
+```
+
+Selecting `[d]` expands full context inline:
+
+```
+## AAPL — detail
+Stop distance: 7.9% | Momentum 5d: +2.3% | Momentum 20d: +8.1%
+Reference (QQQ) 5d: +1.2% | Relative strength: +1.1%
+RSI: 28 (oversold) — Price at 50MA support ($181.20)
+
+Action: approve / skip / modify
+
+[If skip selected on SELL recommendation:]
+Reason: N=News/Event  R=Risk  G=Gut
+Comment: ___
+```
+
+**"Both stopped" display** — portfolio-level event, shown before per-ticker section:
+
+```
+# Nightly Review — 2026-03-09
+
+⚠ PORTFOLIO EVENT — VUG + TLT BOTH STOPPED OUT
+This is a portfolio-level event. Per-ticker stops are suppressed.
+Waiting for VUG re-entry signal. TLT will re-enter paired with VUG.
+
+[d] View re-entry context
+```
+
+**Audit file output**: The nightly conversation (prompts + Daniel's responses) is saved to a dated file as audit trail output. It is not an input file — Daniel does not edit it.
+
+**Ambiguous exit (same day stop AND target hit):** Resolved in two stages:
+
+1. **Deterministic resolution** (using OHLCV only — no intraday fetch):
+   - `open > target` → gap up → target hit first
+   - `open < stop` → gap down → stop hit first
+   - These cases are already covered by fill simulation rules (section 5.9)
+
+2. **Truly ambiguous** (open is between stop and target, both hit same day): prompt Daniel for manual entry. No journal entry written until resolved. Resolution stored with `manual_resolution: true` flag — queryable for future analysis. Expected to be rare.
+
+**Rebalancing notification** (non-blocking): When the quarterly rebalancing report auto-runs, the nightly prompt includes: `"Quarterly rebalancing report generated — review when convenient."` followed by the file path. Does not block trade approvals.
+
+### 5.7 Position Scorecard (Trim Decisions)
+
+```python
+@dataclass
+class PositionScore:
+    ticker: str
+    unrealized_pnl_pct: float
+    distance_to_target_pct: float
+    days_held: int
+    momentum_5d: float
+    momentum_20d: float
+    reference_index_return: float
+    relative_strength: float
+```
+
+### 5.8 Autonomy Progression (Four Phases)
+
+| Phase | Mode | Human role | Position sizing |
+|-------|------|-----------|----------------|
+| 1. Interactive replay | Replay | Decides at each step | N/A (simulated) |
+| 2. Paper trading | Paper | Decides at each step | N/A (simulated) |
+| 3. Early live | Live | Decides; no auto-execute | Reduced — prove behavior holds with real money |
+| 4. Proven live | Live | Optional; `auto_execute` available | Full — go-live criteria met |
+
+**Key distinction**: Automated replay tests the strategy. Paper trading tests strategy + human behavior. These answer different questions.
+
+| Mode | Purpose | Human decisions |
+|------|---------|----------------|
+| **Automated replay** | Strategy validation across historical periods | None — fully automated |
+| **Interactive replay** | Workflow practice, building intuition | Daniel decides at each step |
+| **Paper trading** | Tests strategy + human behavior combined | Daniel decides at each step |
+| **Live (early)** | Proves real-money behavior with reduced risk | Daniel decides |
+| **Live (proven)** | Full execution with optional `auto_execute` | Daniel or system |
+
+### 5.9 Fill Simulation Rules (Paper/Replay)
+
+| Scenario | Fill Price | Gap Flag |
+|----------|-----------|----------|
+| Normal stop hit (open > stop, trades down to stop) | Stop price | false |
+| Gap down past stop (open < stop) | `(min(stop, open) + low) / 2` | true |
+| Normal target hit (open < target, trades up to target) | Target price | false |
+| Gap up past target (open > target) | Target price | false |
+| **Both hit, gap up** (open > target, stop also breached) | Target price (hit first) | false |
+| **Both hit, gap down** (open < stop, target also hit) | Gap fill price (stop hit first) | true |
+| **Both hit, no gap** (open between stop and target) | Manual entry required | — |
+
+**Gap exit journal fields**: For gap-down exits, journal records all four values: stop price, open, day low, simulated fill, and gap flag (true/false). For manual resolutions, records stop price, target price, open, and `manual_resolution: true`.
+
+### 5.10 Go-Live Criteria (Earned Autonomy)
+
+`auto_execute` is unlocked only when ALL four conditions are met:
+
+1. System P&L ≥ +10% over trailing 3 months
+2. System P&L > Daniel's actual P&L over same period
+3. No recent deterioration: last 2-week win rate ≥ 50% of 3-month average win rate. When this flags, the go-live report cross-references multi-period simulation to contextualize it
+4. Multi-period simulation across 5 years × 6-month windows reviewed and understood by Daniel
+
+**Stopping rules (auto-suspend):**
+- 15% drawdown from peak
+- 5 consecutive losses
+
+### 5.11 Backtest Calibration Document
+
+Before paper trading begins, a single-strategy backtest summary is generated as a reference document. Required metrics:
+
+- Total trades, average trades per month
+- Win rate
+- Quintiles of trade P&L, average win, average loss, best/worst trade
+- Longest winning streak, longest losing streak, average streak length
+- Quintiles of holding period, average hold, shortest/longest
+- Average risk/reward ratio, average R-multiple per trade
+- Max drawdown, average drawdown, recovery time from max drawdown
+- Percentage stopped out, percentage hit target, percentage manual close
+
+### 5.12 Multi-Period Simulation
+
+- Automated replay across 5 years × 6-month rolling windows
+- Includes portfolio-level positions: stock index (VUG) and bonds (TLT) simulated in parallel with active trades
+- Run on quarterly cadence (scheduled) + manual command
+- **Output — two-section report:**
+  - **Section 1**: Per-period detail CSV (all metrics for each 6-month window)
+  - **Section 2**: Summary statistics CSV — median, best, worst for ALL metrics across periods
+
+**Bond hedge effectiveness tracking** (per index-stop event):
+
+| Category | Condition | Attention level |
+|----------|-----------|----------------|
+| **Triggered** | `bond_gain >= index_loss` | Normal — thesis worked |
+| **Near miss** | `bond_gain >= index_loss × threshold` but `< index_loss` | Medium — consider relaxing trigger |
+| **Far miss** | `bond_gain < index_loss × threshold` | **High — thesis violated; bonds failed as hedge** |
+
+- Threshold is configurable (default: `0.90` — bonds covered at least 90% of index loss)
+- Near-miss events surfaced to help Daniel decide if the redeployment trigger is too strict
+- Far-miss events flagged with market context (VIX level, rate environment) — these are regime failures where stocks and bonds fell simultaneously (e.g., 2022 rate hike cycle)
+- Report notes for each event: did the system issue a bond-sell recommendation? What was the gap between bond gain and index loss?
+- **"Both stopped" scenario** (VUG and TLT stopped simultaneously or in close proximity): redeployment prompt is suppressed — no bond gains to compare. System shifts to VUG-only re-entry context nightly. When VUG re-entry signal fires, system presents paired recommendation: re-enter VUG + re-enter TLT on the same day. TLT re-enters as hedge alongside VUG, not independently.
+- **Post-MVP options noted**: (a) TLT-first re-entry if TNX momentum turns negative before VUG signal; (b) hold BIL during the gap period; (c) asymmetric VUG re-entry at reduced allocation initially.
+
+### 5.13 Strategy Comparison Report
+
+Compares up to 3 strategies side-by-side across the same historical periods. Max 3 enforced — error if more passed.
+
+```
+python journal.py compare --ticker AAPL --period 2025 --strategies rsi_ma_v1 rsi_ma_v2 momentum_v1
+```
+
+Output — two-section report:
+- **Section 1**: Per-period detail CSV — all metrics for each strategy, for each 6-month window
+- **Section 2**: Summary stats CSV — median/best/worst for every metric, per strategy
+
+### 5.14 Perfect Trade Benchmark
+
+- **Definition**: buy at the lowest price in the period, sell at the subsequent highest price
+- **Capture ratio**: `realized_return ÷ perfect_return × 100%`
+- Reported alongside actual and system P&L to give aspirational upper bound
+
+### 5.15 Rebalancing Calculator
+
+- Calculates drift from target allocations and suggests rebalancing trades
+- Prices fetched automatically via Data Fetcher — no manual input
+- Rebalancing events modeled as part of multi-period simulation — same component, historical data fed one day at a time
+- Operational report reuses the same logic: `python portfolio.py rebalance --preview`
+- Run on quarterly cadence (non-blocking nightly notification) + manual command
+
+---
+
+## 6. Portfolio Structure
+
+The system generates recommendations and stop alerts. Daniel executes all orders manually in Fidelity. The system records outcomes via journal entries created after execution.
+
+| Bucket | Allocation | Stop type | Stop level |
+|--------|-----------|-----------|-----------|
+| Index (VUG or similar) | 70% | Trailing | YTD gain protection formula |
+| Bonds (TLT) | 25% | Trailing | 15% from purchase high |
+| Active trades | 5% | Fixed | Per-trade (ATR-based, 2% risk rule) |
+
+**Index trailing stop formula:**
+```python
+if ytd_return > 0:
+    stop = entry_price * (1 + ytd_return * 0.50)  # protect 50% of gains
+else:
+    stop = entry_price * 0.97  # 3% max loss floor
+```
+
+**Bond stop**: 15% trailing stop from purchase high. Rationale: TLT's normal rate-driven fluctuations are ±5-10%; 15% catches structural regime failures (e.g., 2022 rate hike cycle) without triggering on noise.
+
+**Active trade capital-at-risk cap**: 5% of total portfolio value across all active positions combined.
+
+**Bond redeployment trigger rule**: When the index stop triggers, prompt redeployment of bond gains only when:
+```
+bond_gain_since_stop_date >= index_loss_at_stop  (both in $ terms)
+```
+See `README.md` for full bonds rationale and crash insurance logic.
+
+---
+
+## 7. Technical Constraints
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Language | Python | Daniel's primary language |
+| Storage | SQLite + Alembic | Simple, offline, versioned schema |
+| Historical prices | Gzipped CSV (`.csv.gz`) | Compact, append-only, git-excluded |
+| Market data | yfinance `auto_adjust=True` | Handles splits/dividends automatically |
+| Calendar | `pandas_market_calendars` | Accurate trading day validation |
+| UI | Terminal prompts | Most natural for a developer-trader |
+| Concurrency | None | Read-all → compute → write-once pattern |
+| Cloud | None | Fully offline |
+| Live broker | Fidelity (+ TradingView paper trading) | Daniel's existing accounts |
+| LLM exchange format | JSON (SQLite); TOON noted for future | TOON (Token-Oriented Object Notation) deferred |
+| Strategy definition | `docs/research/` folder | Same project, no separate repo |
+
+**Strategy folder structure:**
+```
+docs/
+  research/
+    strategy-ideas.md
+    indicators/
+    observations/
+```
+
+---
+
+## 8. CLI Conventions
+
+**Unified CLI** (`tradingbot <subcommand>`) — consistent entry point, thin wrapper over importable modules. Each subcommand maps to a module concern.
+
+| Command | Purpose |
+|---------|---------|
+| `tradingbot strategy dry-run --ticker AAPL --date 2026-03-09` | Single-day dry run |
+| `tradingbot journal report --period=90d` | Generate all reports at once |
+| `tradingbot simulate multi-period --portfolio sim_portfolio.yaml --years 5 --window 6m` | Multi-period simulation (automated) |
+| `tradingbot simulate replay --portfolio sim_portfolio.yaml --start 2024-01-01` | Interactive replay |
+| `tradingbot simulate replay --portfolio sim_portfolio.yaml --start 2024-01-01 --auto` | Automated single-run replay |
+| `tradingbot journal compare --period 2025 --strategies rsi_ma_v1 rsi_ma_v2 momentum_v1` | Strategy comparison (max 3) |
+| `tradingbot portfolio rebalance --preview` | Rebalancing calculator |
+| `tradingbot nightly` | Run nightly review |
+
+Report filenames include the date range: `override-impact-2026-01-08-to-2026-03-08.csv`
+
+**Module structure:**
+```
+tradingbot/
+  data/           # DataFetcher, MarketSnapshot construction
+  strategy/       # Strategy, Metric, Indicator, Signal, Rule, RuleContext
+  journal/        # JournalWriter, JournalReader, Alembic migrations
+  portfolio/      # PortfolioManager, PositionScorecard, RebalancingCalculator
+  simulation/     # ReplayEngine (shared by interactive, automated, multi-period)
+  reports/        # All report generators, shared output formatting function
+  config/         # portfolio.yaml loader, config hash enforcement
+  tests/
+    golden/       # Static golden input files (OHLCV, indicator values, portfolio states)
+  tradingbot.py   # Unified CLI entry point
+```
+
+---
+
+## 9. Hard Failures (No Fallbacks)
+
+- ATR of zero — hard failure
+- VIX or SPY fetch fails — hard failure
+- Rule condition throws exception — hard failure (not silently suppressed)
+- Fewer than 220 trading days available after fetch attempt — hard failure
+- **Cold-start behavior** (`JournalReader` with no history): methods like `win_rate`, `consecutive_losses`, `override_rate` return neutral defaults (e.g. `0.0`, `0`, `0.0`) when fewer than `n` records exist — never fail. Neutral defaults are surfaced transparently in output (e.g. "win rate: n/a — insufficient history").
+
+---
+
+## 10. Exit and Re-Entry Rules
+
+### Active Stocks
+
+| Event | Rule |
+|-------|------|
+| Stop hit | Exit at stop price (or gap fill price) |
+| Target hit | Exit at target price |
+| **Re-entry after stop** | **5 trading day cooldown — no re-entry on same ticker regardless of signal** |
+| Re-entry after cooldown | Normal signal evaluation resumes |
+
+- Cooldown length is configurable in strategy YAML (`reentry_cooldown_days: 5`)
+- Cooldown is per-ticker, not portfolio-wide
+- Post-MVP: evaluate replacing or layering cooldown with an `is_high_confidence` signal gate — but `is_high_confidence` flag needs more thought before it can serve this role reliably
+
+### Index ETF (VUG)
+
+| Event | Rule |
+|-------|------|
+| Stop hit | Exit (YTD gain protection formula triggered) |
+| **Re-entry** | **Manual decision — no automatic re-entry signal** |
+
+Every night after a VUG stop, the nightly review surfaces re-entry context until Daniel re-enters:
+
+```
+# VUG — STOPPED OUT (Day 8)
+
+Re-entry signals:
+  Price recovery:  VUG $241.20 | 200MA $248.50 | Below (-3.0%)
+  Bond crossover:  Bond gain $1,840 | Index loss $2,100 | Gap -$260 (near miss)
+  Momentum:        5d: -1.2% | 20d: -4.8% | 50d: -8.1%
+                   → All negative — downtrend likely continuing
+
+Decision: re-enter / wait
+Reason (text): ___
+```
+
+- **Price recovery**: VUG price vs 200MA and vs stop price that triggered exit
+- **Bond crossover**: bond gain vs index loss in $ terms (triggered / near miss / far miss). Suppressed if TLT is also stopped out — "both stopped" state displayed instead
+- **Momentum**: 5d, 20d, 50d returns. 5d/20d reuse existing `Recommendation` fields; 50d is an additional calculation on existing OHLCV
+- Plain-language momentum interpretation surfaced to reduce cognitive load
+- Decision + reason recorded every night — creates accountability trail for re-entry timing
+- P&L benchmarking not applied to index re-entry timing (less relevant for long-term holds)
+
+### Bonds ETF (TLT)
+
+| Event | Rule |
+|-------|------|
+| Stop hit | Exit (15% trailing stop from purchase high triggered) |
+| **Re-entry** | **Manual decision — no automatic re-entry signal** |
+
+Every night after a TLT stop, the nightly review surfaces re-entry context until Daniel re-enters:
+
+```
+# TLT — STOPPED OUT (Day 12)
+
+Re-entry signals:
+  Price recovery:  TLT $88.20 | 15% stop level $91.40 | Still below (-3.5%)
+  Momentum:        5d: +0.4% | 20d: -3.1% | 50d: -9.2%
+                   → Mixed — short-term stabilizing, medium-term still negative
+  Rate direction:  10Y yield 20d momentum: +0.8% → rates still rising
+
+Decision: re-enter / wait
+Reason (text): ___
+```
+
+- **^TNX** (10-year Treasury yield) fetched via yfinance — no new data source; added to Data Fetcher scope
+- `TNX_20d_momentum > 0` = rates still rising → TLT re-entry premature
+- `TNX_20d_momentum < 0` = rates falling/stabilizing → TLT recovery more likely
+- Decision + reason recorded nightly for accountability trail
+
+**Post-MVP — Momentum direction change detection** (applies to both TLT and VUG re-entry):
+- Surface when momentum is still negative but improving — "second derivative" signal indicating a potential turning point
+- Implementation: `momentum_velocity = momentum_today - momentum_N_days_ago`
+- If `momentum < 0` but `momentum_velocity > 0` → flag as "decelerating downtrend — watch for reversal"
+- Useful as an early warning before the momentum signal itself turns positive
+
+**Post-MVP — VUG substitute during high-volatility periods**:
+- During sustained high VIX environments, substitute VUG with a lower-beta index instrument
+- Candidate substitutes: SPLV or USMV (low-volatility factor ETFs — same equity exposure, lower drawdowns)
+- Switching signal candidate: VIX level or VIX 20d trend (already fetched)
+- Implement only after simulation confirms the substitution improves risk-adjusted returns
+
+**Post-MVP — TLT/BIL rate-regime switching** (implement only after simulation confirms TLT far-miss frequency warrants it):
+
+Priority order for switching signal:
+1. Manual `fed_stance` entry after each FOMC meeting (`hiking | pausing | cutting`) — 8x/year, zero new infrastructure, Daniel already has a view
+2. ^TNX 20d momentum as automated proxy — same data source, no new dependency
+3. CME FedWatch implied probabilities — last resort; no official API, already priced into TLT price action, not worth the data source complexity
+
+When `fed_stance = hiking` or `TNX_20d_momentum > 0`: hold BIL instead of TLT
+
+---
+
+## 11. Open Questions / Deferred
+
+- ~~Q6~~ **RESOLVED**: Ambiguous exit (same-day stop + target) — fetch intraday data to determine sequence; hard failure if fetch fails.
+- ~~**Exit and re-entry strategies**~~ **RESOLVED**: Defined in section 10 for active stocks, index ETF (VUG), and bonds ETF (TLT).
+- TOON format: noted as future LLM exchange format; JSON used for now
+
+---
+
+## 12. Development Practices
+
+### TDD — Test-Driven Development
+
+All development follows TDD across the board. The cycle is:
+
+1. **Present test summary** — brief description of what each test validates. No inputs/outputs unless absolutely critical for understanding the test purpose. High-level approach only.
+2. **Discuss and agree** — Daniel reviews and agrees before any implementation begins.
+3. **Implement** — code written after agreement on tests.
+
+Same cycle applies to later modifications: summary → discuss → agree → implement.
+
+### Coding Standards
+
+- **Plan first**: present implementation plan → discuss → agree → implement
+- **Testability**: prefer designs that are naturally testable (TDD enforces this)
+- **Readability**: methods should be 20–50 lines. Longer methods require explicit justification.
+- **Composition**: several small independent components compose into full functionality
+- **Single responsibility**: each component does one thing. Separation of concerns enforced throughout.
+
+### Regression Testing — Golden Input Sets
+
+Static files committed to the repo. Adding to the golden set is an explicit decision visible in git history.
+
+**Priority golden sets:**
+
+| Set | Purpose |
+|-----|---------|
+| RSI values | Validate against TradingView exports for known dates |
+| ATR values | Critical — position sizing depends on correctness |
+| Moving averages | Straightforward indicator validation |
+| Fill simulation outputs | Deterministic — no external dependency |
+| Portfolio state derivation | End-to-end: known trade history → expected positions + cash |
+
+**First two golden tests to write** (already required by the brief):
+1. `PRAGMA integrity_check` — journal integrity on startup
+2. Lookahead bias assertion — `max(ohlcv.index) <= as_of_date` across all `MarketSnapshot` construction paths
+
+---
+
+## 13. Elicitation Methods Completed
+
+| Method | Key Findings |
+|--------|-------------|
+| First Principles | Root cause is missing feedback loop, not bad strategy |
+| Pre-mortem (Round 1) | Nightly friction, override rationalization, data gaps |
+| 5 Whys | Reframed problem: accountability gap, not strategy gap |
+| What If Scenarios | Earned autonomy model; stopping rules |
+| SCAMPER | Terminal prompts over file editing; persistent recommendation flag |
+| Occam's Razor | Simplified override tracking to single record + derived delta |
+| Stakeholder Round Table | Portfolio value definition; capital-at-risk cap; scorecard for trim |
+| Pre-mortem (Round 2) | Execution confirmation gap; fill simulation rules; gap-down formula |
+| Self-Consistency Validation | Two-layer strategy design; N-ticker design from day one |
+| Improv Yes-And | Momentum in recommendation; position scorecard stats; high-confidence flag |
+| Inversion | Audit trail; strategy comparison report |
+| Analogical Reasoning | Perfect trade benchmark; capture ratio |
+| Future Backward | Go-live criteria; multi-period simulation |
+| Extreme Cases | Bond allocation; index stop formula; rebalancing calculator |
+| Critical Perspective | Terminal prompts confirmed; 5% active cap confirmed; index handled by system |
+| Socratic Questioning (#41) | Multi-period simulation cadence; quarterly rebalancing; bonds rationale; Q6 resolved (intraday fetch) |
+| Rubber Duck Debugging Evolved (#21) | Settlement prompt flow; unified trade lifecycle; 3-tag override system (N/R/G) with required comment; ranking formula with EV + Conviction alternatives |
+| Algorithm Olympics (#22) | Ranking formula: R/R × win_rate for MVP; EV and Conviction computed alongside for periodic report comparison |
+| Random Input Stimulus (#28) | Confidence signal red/yellow/green (post-MVP); LLM-assisted journal analysis (post-MVP); pre-nightly checklist (post-MVP) |
+| Genre Mashup (#30) | LLM clinical summary + guided retrospective (post-MVP); pre-nightly checklist confirmed |
+| Comparative Analysis Matrix (#33) | Python class + YAML config validated — all strategy parameters expressible in YAML |
+| Critique and Refine (#42) | Settlement phase rewritten; open questions updated; win probability source linked to JournalReader; elicitation log updated; CSV/prompt terminology unified |
+| Explain Reasoning (#43) | Recovery flow for missed nights (step-through each day); min_history_days configurable per strategy; accountability loop assumption made explicit |
+| Lessons Learned (#50) | Real product = behavioral accountability tool; nightly flow is highest-risk implementation area; simplicity chosen repeatedly; post-MVP backlog is a roadmap; data model is the stable foundation |
