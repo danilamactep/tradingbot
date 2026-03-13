@@ -15,7 +15,23 @@ Daniel is an intermediate developer-trader who has been trading for several year
 
 **North star: Evidence over intuition — reasoned decisions, earned automation.**
 
-> The nightly review exists to give Daniel the evidence he needs to trust tomorrow's recommendation. Confidence in the system is built one reasoned decision at a time.
+> It's 9pm. You open the terminal, type `tradingbot nightly`, and the system picks up where yesterday left off.
+>
+> First, settlement. It detected that AAPL's stop level was breached at the open. You confirm the execution price — fifteen seconds. It asks about the two staged orders from last night. You enter the fills. The journal updates. That part takes three minutes total.
+>
+> Then tonight's recommendations appear. Four of them — stocks and ETFs, ranked by opportunity. Each one fits on a single screen: entry, stop, target, risk/reward, the signal that triggered it. You open TradingView on the second monitor and confirm the setup looks right. Two you approve immediately. One you skip — your choice, not a lack of options. The fourth you modify slightly. The system stages everything for tomorrow.
+>
+> Eight minutes, start to finish. You close the terminal and go to bed knowing exactly what's set up and why.
+>
+> Six months in, the picture is clear. Your portfolio has three layers working in parallel: VUG compounding steadily in the background, TLT providing a cushion when markets get rough, and a focused active sleeve where the real learning happens. Each layer has rules. When VUG stops out, you know what to watch before re-entering. When bond gains cover the index loss, the system tells you — thesis working. When they don't, it flags it — regime to understand.
+>
+> Your active sleeve never runs dry. The system always has suggestions. On slow weeks there are fewer; on volatile weeks there are more. You're never sitting idle wondering what to do with available capital.
+>
+> The performance picture builds over time without you assembling it. Win rate by signal type. P&L delta between what you did and what the system recommended. Which override tags are costing you and which are earning. The system doesn't lecture — it just shows the numbers, every session, quietly accumulating into a picture you couldn't have constructed manually.
+>
+> When you want to test a different stock list or a new strategy, you spin up a simulation portfolio and replay two years of history in minutes. Reports come out the other side: win rate, drawdown, capture ratio, period-by-period. You compare versions side by side and make the call with evidence.
+>
+> The routine is calm. Not exciting. That's the point. The decisions are reasoned, the records are clean, and the portfolio is growing. You know exactly why every trade happened, and the system is slowly, measurably, earning the right to do more.
 
 ### Why Not an Existing Tool?
 
@@ -38,7 +54,8 @@ A personal, offline Python toolkit that:
 2. Tracks every decision Daniel makes — including overrides
 3. Compares actual P&L vs what the system would have produced
 4. Generates nightly reviews that Daniel must actively engage with
-5. Earns the right to auto-execute only after proving itself
+5. Replays strategies and portfolios across years of market history at speed, generating reports detailed enough to compare, iterate, and decide with confidence
+6. Earns enough trust, through demonstrated performance, that following its recommendations becomes the default and overriding them becomes the exception
 
 The system is not a black box. Daniel retains full control. The system's job is to accumulate evidence of its own reliability — so that over time, trusting it becomes the reasoned choice.
 
@@ -50,8 +67,7 @@ The system is not a black box. Daniel retains full control. The system's job is 
 |-----------|--------|
 | Evidence first | The journal and override tracker exist to build a proof record — not to catch bad behavior, but to answer: does the system's judgment outperform mine yet? |
 | Minimal friction, maximum clarity | Nightly review must be fast; every session should leave Daniel with clearer evidence to reason from |
-| Earned autonomy | `auto_execute` is gated behind a go-live readiness report |
-| Boring technology | Python, SQLite, file I/O — no cloud, no streaming, no concurrency |
+| Boring technology | Python, SQLite, file I/O — no cloud, no streaming; `multiprocessing` allowed for parallel simulation runs |
 | Audit trail everything | Every recommendation includes a full JSON reasoning snapshot |
 
 ---
@@ -70,21 +86,24 @@ The system is not a black box. Daniel retains full control. The system's job is 
 | **Replay Mode** | Fill simulation, automated replay across historical data |
 | **Rebalancing Calculator** | MVP required — backtest simulation must model quarterly rebalancing events to produce accurate portfolio progression; prices fetched automatically via Data Fetcher |
 
+### MVP scope rationale
+
+The Rebalancing Calculator was nearly deferred but is required for MVP because: without modeling quarterly rebalancing in multi-period simulation, portfolio progression numbers are inaccurate (static 70/25/5 allocation is unrealistic). Re-running simulations after adding it post-MVP would invalidate earlier decisions. The simulation logic and operational report (`--preview`) share enough code that splitting them adds complexity without benefit.
+
 ### Post-MVP (explicitly deferred)
 
+- **LLM-assisted strategy research** — use an LLM (Claude or similar) to analyze replay and simulation reports alongside strategy definitions to suggest improvements: identifying parameter ranges worth testing, spotting patterns in losing periods, proposing signal combinations not yet tried. This is a strategy research assistant, not a report summarizer — the value is in surfacing what the data implies about strategy design. Requires substantial replay report history before it's useful. Prompt design, data scoping, and evaluation criteria to be defined before implementation.
+- **Cancelled order tracking** — store unfilled/cancelled staged orders to help calibrate strategy entry thresholds (e.g., entry limits frequently missed by small margins suggest threshold needs tightening).
 - **Confidence signal (red/yellow/green)** — visual confidence rating per recommendation abstracted from the ranking score. Enables faster scanning without computing R/R and win rate mentally. Categorization criteria need further discussion before implementation.
-- **LLM-assisted journal analysis** — feed journal data to an LLM (Claude or similar) to generate: (a) plain-language trading health narrative ("clinical summary" of behavior patterns, override trends, win rate trajectory); (b) guided weekly retrospective with targeted questions based on actual trade history. Rule-based templates are the MVP-adjacent fallback; LLM is the target. TOON format (already noted) is the natural exchange format for this integration. Data scoping and privacy considerations to be defined before implementation.
 - **Pre-nightly checklist** — short prompt before recommendation review: macro conditions, earnings this week for held positions, VIX level. Prompted by system, answered by Daniel. Checklist items to be defined.
 - **Add / reduce position actions** — `add` and `reduce` as first-class strategy actions alongside `buy / sell / hold / no-action`. Requires defining skip logging behaviour for each.
 - **"Ask for more" recommendations** — option to request additional recommendations beyond default display in nightly staging phase.
 - **Missed opportunity tracking** — store non-acted "buy" signals for tickers defined in `config/portfolio.yaml` instruments list to enable a report showing what the system would have earned on signals Daniel never took. Bounded scope prevents noise.
-- **Cancelled order tracking** — store unfilled/cancelled staged orders to help calibrate strategy entry thresholds (e.g., entry limits frequently missed by small margins suggest threshold needs tightening).
 - **Execution deviation tracking** — capture slippage (set price vs actual Fidelity fill price) per trade. Schema: `set_entry`, `actual_entry`, `set_stop`, `actual_stop`, `set_target`, `actual_target`. Deviation computed at report time. Deferred due to nightly review friction cost; trivial to add via Alembic migration.
 - **Market regime labels** — tag fetched data with bull/bear/sideways market state and rate direction (rising/falling). Enables strategy performance analysis by regime.
 - **Pre-market entry modification tracking** — "modify" action in nightly review should record which field was changed (entry/stop/target/size). Enables Daniel to see pre-market adjustment habit reflected in data over time.
 - **Legacy position management** — positions held before the system was set up have no entry recommendation, no override history from inception, and break the feedback loop. Excluded from MVP. Post-MVP: define onboarding flow for pre-existing positions (manual journal entry with no system recommendation baseline).
 - **Broker automation** — automate outcome capture via broker API integration, replacing manual settlement prompts.
-- **Live trading / `auto_execute`** — gated behind go-live criteria (section 5.10).
 - Scheduled runner (cron wrapper around nightly script — deployment concern, not a component)
 
 ### No lookahead bias (invariant across all modes)
@@ -92,10 +111,6 @@ The system is not a black box. Daniel retains full control. The system's job is 
 No component has knowledge of future prices — ever. In replay and multi-period simulation modes, the system feeds OHLCV data one day at a time, exactly as it would in live mode. `MarketSnapshot.ohlcv` contains only up to `min_history_days` trading days (default 220) up to and including `as_of_date`. The day's close price is never available until settlement the following day. This invariant must be enforced at the data feed layer, not assumed by individual components.
 
 **Regression test required**: an automated test must assert `max(ohlcv.index) <= as_of_date` across all code paths that construct `MarketSnapshot`. A design invariant without a test is not an invariant.
-
-### MVP scope rationale
-
-The Rebalancing Calculator was nearly deferred but is required for MVP because: without modeling quarterly rebalancing in multi-period simulation, portfolio progression numbers are inaccurate (static 70/25/5 allocation is unrealistic). Re-running simulations after adding it post-MVP would invalidate earlier decisions. The simulation logic and operational report (`--preview`) share enough code that splitting them adds complexity without benefit.
 
 ---
 
@@ -105,11 +120,11 @@ The Rebalancing Calculator was nearly deferred but is required for MVP because: 
 
 - **Library**: `yfinance` with `auto_adjust=True` (handles splits/dividends automatically)
 - **Storage**: gzipped CSVs (`historical_prices/AAPL.csv.gz`) — append-only, excluded from git
-- **Re-fetch trigger**: `ticker.actions` checked for new corporate events since last fetch
-- **Corporate event handling**: M&A, delistings, reverse splits detected as data anomalies — flagged for manual review
-- **Pluggable design**: fetcher is a replaceable component behind an interface
-- **Validation**: Minimum trading days required is defined per strategy in YAML (`min_history_days`); default 220 (covers MA-200 + calendar buffer). Uses `pandas_market_calendars` for calendar validation.
-- **New ticker onboarding**: `min_history_days` (from strategy YAML) required before a ticker is evaluated. If history is missing or insufficient, the fetcher attempts to fetch the full history automatically. If `min_history_days` still cannot be satisfied after fetch — hard failure. No partial evaluation.
+- **Re-fetch trigger**: `ticker.actions` checked for new corporate events since last fetch. When a corporate event is detected: re-fetch all data from the earliest date available locally in the gzip, capped at `max_history_years` (from config). Do not fetch beyond this cap regardless of local history.
+- **Corporate event validation**: after re-fetch, run a price continuity sanity check — if the ratio between consecutive closing prices at the event date exceeds a threshold inconsistent with normal volatility (i.e., looks like an unadjusted split), treat as a hard failure. Bad price data corrupts all downstream metrics; failing loudly is safer than silently continuing with corrupted ATR/RSI values. Threshold to be defined during implementation.
+- **Pluggable design**: yfinance sits behind a fetcher interface as an architectural guardrail. The interface is not expected to change or be reimplemented — this is a protective boundary, not an active extensibility plan.
+- **Validation**: Total data loaded per ticker = `max_history_years` (from config, default 5) × trading days + `min_history_days` (from strategy YAML, default 220). The extra 220 days acts as the indicator warm-up period before the simulation window begins. Uses `pandas_market_calendars` for calendar validation.
+- **New ticker onboarding**: Full history requirement (`max_history_years + min_history_days`) must be satisfied before a ticker is used in simulation. If a ticker lacks sufficient history (e.g., recently listed), this is a hard failure by default. Override with `--allow-partial-history` CLI flag — in this mode, the fetcher uses whatever history is available and the simulation window is shortened accordingly. No partial evaluation without explicit override.
 - **Scope**: fetches all instruments + their reference indices defined in `config/portfolio.yaml` + ^TNX (10-year Treasury yield, used for TLT re-entry rate direction signal)
 
 ### 5.2 Strategy Engine
@@ -121,7 +136,7 @@ The Rebalancing Calculator was nearly deferred but is required for MVP because: 
 | `Metric` | Raw computed number from OHLCV. No interpretation. | TradingView golden inputs |
 | `Indicator` | Evaluates metric(s) against threshold → boolean/state. Thresholds live in YAML config. | Known metric values |
 | `Signal` | Composes indicators → trade action (buy/sell/hold/no-action). | Known indicator states |
-| `Rule` | Filters/modifies signal using journal + market context. | Known journal/market context |
+| `Rule` | Filters/modifies signal using journal history + market context. MVP scope: only rules with explicit, measurable thresholds (e.g., VIX level, capital-at-risk cap). Regime-based rules (bull/bear/sideways, macro conditions) are post-MVP. | Known journal/market context |
 | `Strategy` | Thin orchestrator — wires metrics → indicators → signals → rules → `Recommendation`. | End-to-end |
 
 - **Layer 1**: Python classes implementing each layer
@@ -164,8 +179,13 @@ Tickers and portfolio allocations are unified in a single file — `tickers.yaml
 open positions  = all buys without a corresponding exit
 cash balance    = starting_capital - Σ(entry costs) + Σ(exit proceeds)
 capital_at_risk = Σ(cost basis of open stock positions)
-portfolio_value = cash + capital_at_risk
+risk_basis      = cash + capital_at_risk         ← used for position sizing and cap enforcement
+market_value    = risk_basis + unrealized_pnl    ← what the account is actually worth today
 ```
+
+Both values are displayed in reports and the nightly portfolio snapshot, clearly labeled. `risk_basis` is a non-standard definition — reports include a brief note explaining that sizing uses cost basis, not market value, to prevent misreading the number as account value.
+
+**Regression test required**: golden input set of known trade history → expected positions, cash balance, capital-at-risk, and portfolio value. This derivation is the foundation of position sizing and cap enforcement — a silent error here corrupts everything downstream.
 
 ### 5.4 Journal (SQLite + Alembic)
 
@@ -440,6 +460,8 @@ The system generates recommendations and stop alerts. Daniel executes all orders
 | Bonds (TLT) | 25% | Trailing | 15% from purchase high |
 | Active trades | 5% | Fixed | Per-trade (ATR-based, 2% risk rule) |
 
+**ETF entry strategy (MVP):** Buy to target allocation on first run — no entry signal required. The portfolio composition decision (70/25/5) is the strategy for ETFs. Once in position, rebalancing and stops manage the position from there. Entry signal logic for ETFs (e.g., wait for price above 200MA) is post-MVP and should be validated through simulation before adopting.
+
 **Index trailing stop formula:** if `ytd_return > 0`: protect 50% of gains (`entry × (1 + ytd_return × 0.50)`); else: 3% max loss floor (`entry × 0.97`). See `docs/data-model-sketch.md`.
 
 **Bond stop**: 15% trailing stop from purchase high. Rationale: TLT's normal rate-driven fluctuations are ±5-10%; 15% catches structural regime failures (e.g., 2022 rate hike cycle) without triggering on noise.
@@ -464,6 +486,7 @@ See `README.md` for full bonds rationale and crash insurance logic.
 | Market data | yfinance `auto_adjust=True` | Handles splits/dividends automatically |
 | Calendar | `pandas_market_calendars` | Accurate trading day validation |
 | UI | Terminal prompts | Most natural for a developer-trader |
+| `max_history_years` | Config value, default 5 | Controls total fetch window and simulation depth; applies to re-fetch cap and new ticker onboarding |
 | Concurrency | None | Read-all → compute → write-once pattern |
 | Cloud | None | Fully offline |
 | Live broker | Fidelity (+ TradingView paper trading) | Daniel's existing accounts |
@@ -521,6 +544,7 @@ tradingbot/
 - VIX or SPY fetch fails — hard failure
 - Rule condition throws exception — hard failure (not silently suppressed)
 - Fewer than 220 trading days available after fetch attempt — hard failure
+- Price continuity check fails after corporate event re-fetch — hard failure (unadjusted split suspected; manual intervention required)
 - **Cold-start behavior** (`JournalReader` with no history): methods like `win_rate`, `consecutive_losses`, `override_rate` return neutral defaults (e.g. `0.0`, `0`, `0.0`) when fewer than `n` records exist — never fail. Neutral defaults are surfaced transparently in output (e.g. "win rate: n/a — insufficient history").
 
 ---

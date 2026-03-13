@@ -64,7 +64,8 @@ class MarketContext:
     mode: str                    # 'replay' | 'paper' | 'live'
     spy_daily_return: float
     vix_level: float
-    portfolio_value: float       # cash + cost of open positions
+    risk_basis: float            # cash + cost basis of open positions — used for sizing/cap enforcement
+    market_value: float          # risk_basis + unrealized_pnl — actual account value
     available_cash: float
     total_capital_at_risk: float
     capital_at_risk_pct: float
