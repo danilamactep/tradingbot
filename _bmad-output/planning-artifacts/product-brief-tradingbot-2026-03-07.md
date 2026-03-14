@@ -189,34 +189,60 @@ Both values are displayed in reports and the nightly portfolio snapshot, clearly
 
 ### 5.4 Journal (SQLite + Alembic)
 
-- Primary store for all trades, recommendations, overrides, and decisions
-- **Hold recommendations for open positions are stored** — every nightly recommendation for a currently held position (VUG, TLT, active trade) is journaled, including "hold". This enables bond hedge effectiveness queries (e.g., "did the system recommend selling TLT on the day VUG stopped?"). Unpositioned tickers with "no-action" recommendations are NOT stored — noise with no interpretive value.
+**Purpose**: The journal exists to answer the central question: does the system's judgment outperform mine? It does this by maintaining two parallel trade records — one for what the system would have done, one for what Daniel actually did — and comparing them over time.
+
+**Two journals, one database**: Both journals live in the same SQLite database using a single `trades` table with a `portfolio_id` column. A `portfolios` table defines each journal (`name`, `starting_capital`, `created_at`). Adding a new journal type — e.g., a post-MVP pure-system portfolio — requires one INSERT into `portfolios`, no schema migration, no code change. `JournalReader` takes a `portfolio_id` parameter and works identically for any journal. Same starting capital, same position sizing rules, same capital-at-risk cap. Portfolio state is derived independently per portfolio_id at the start of each nightly run.
+
+**System journal rules** — how the system journal is written each night:
+
+| Daniel's action | System journal records |
+|----------------|----------------------|
+| Ignores buy recommendation | Skips — no entry recorded |
+| Buys (at own price) | Mirrors — same ticker, recommended entry/stop/target |
+| Voluntary early exit (no recommendation) | Keeps position — no exit recorded |
+| Ignores sell recommendation | Exits at recommended price |
+
+The system journal is the system's "ideal" execution: it never second-guesses, always follows its own signals. Both portfolios grow from the same starting point and diverge only through Daniel's decisions.
+
+**Hold recommendations stored**: every nightly recommendation for a currently held position (VUG, TLT, active trade) is journaled, including "hold." This enables bond hedge effectiveness queries (e.g., "did the system recommend selling TLT on the day VUG stopped?"). Unpositioned tickers with "no-action" are NOT stored — noise with no interpretive value.
+
+**Technical:**
 - **Read pattern**: read-all → compute → write-once (no concurrent access, no WAL mode needed)
-- **All writes are transactional** — every journal write is wrapped in an explicit SQLite transaction. On startup, run `PRAGMA integrity_check` and halt if journal is inconsistent.
+- **All writes transactional** — every journal write wrapped in an explicit SQLite transaction. On startup, run `PRAGMA integrity_check` and halt if journal is inconsistent.
 - Migrations managed by Alembic
-- JSON stored for audit trail snapshots
+- JSON audit trail stored per recommendation: ticker, source file + hash, date range, RSI, MAs, ATR, VIX, SPY return, capital-at-risk pct, rules warned/blocked. See `docs/data-model-sketch.md`.
+- Git tagging for backtest traceability: `git tag backtest-AAPL-2026-03-09`
 
-**Audit trail JSON** — per-recommendation snapshot stored in SQLite: ticker, source file + hash, date range, RSI, MAs, ATR, VIX, SPY return, sector return, capital-at-risk pct, rules warned/blocked. See `docs/data-model-sketch.md` for full structure.
+**JournalReader** (read-only wrapper) — methods: `win_rate`, `consecutive_losses`, `signal_win_rate`, `divergence_rate`, `divergence_quality_score`, `divergence_pnl_by_tag`. See `docs/data-model-sketch.md` for full interface.
 
-**Git tagging for backtest traceability:** `git tag backtest-AAPL-2026-03-09`
+**Post-MVP**: third "pure system" journal (always buys top pick regardless of Daniel's actions) — enables ticker selection analysis: was it the ticker choice or the execution that drove the gap?
 
-**JournalReader** (read-only SQLite wrapper) — methods: `win_rate`, `consecutive_losses`, `signal_win_rate`, `override_rate`, `override_quality_score`, `override_pnl_by_tag`. See `docs/data-model-sketch.md` for full interface.
+### 5.5 Divergence Tracking
 
-### 5.5 Override Tracking
+A divergence occurs whenever the actual journal and system journal differ. At settlement, the system detects all divergences automatically by comparing the two portfolios — Daniel never needs to manually flag a deviation.
 
-- Each override is a data point in the central question: does the system's judgment outperform mine yet? Stored as a record in the journal (not a parallel P&L stream).
-- P&L delta (actual vs system) derived at report time from override records — the answer accumulates over time
-- **Override tags** (one required) + **comment** (always required):
-  - `N` — News/Event (any external catalyst: macro, earnings, sector move)
-  - `R` — Risk (portfolio-level concern: position size, drawdown, capital at risk)
-  - `G` — Gut (intuition or any reason that doesn't fit N or R)
-- Comment captures reasoning in Daniel's own words — essential for recollection and pattern analysis
-- **Skip log for sell recommendations** — when the system recommends SELL on an open position and Daniel does not act, that skip is recorded with reason and tags. Skipped buy signals on unpositioned tickers are NOT recorded (noise).
-- **Win rate and override stats** — surfaced from the first closed position / first override respectively. No minimum sample floor; "n/a — insufficient history" shown only when zero records exist.
-- **Dry-run output parity** — `strategy.py dry-run` must produce recommendation output identical in format to the nightly review staging phase. Trust depends on consistency.
-- **Override tag performance breakdown**: reports show P&L delta *per tag* (N/R/G), not just aggregate. Terminal bar format: `G ████████ 60% (-6.1%)` `N ███ 20% (+1.2%)`
-- **Override quality score**: % of overrides that outperformed the system recommendation, tracked over rolling 30d and 90d windows. Reported alongside aggregate override impact.
-- **Named insight**: when tag performance is asymmetric, surface a plain-language summary (e.g. "News overrides: +1.2% avg | Gut overrides: -6.1% avg — your edge is news, your drag is gut")
+**Four divergence types:**
+
+| Type | What happened | Reason required |
+|------|--------------|----------------|
+| Price divergence | Daniel bought at different price than recommended | Yes — was it forced (slippage, gap) or a deliberate choice? |
+| Early exit | Daniel sold voluntarily; system kept the position | Yes |
+| Ignored sell | System exited; Daniel held | Yes |
+| _(ignored buy — both skip)_ | No divergence | No |
+
+**Divergence tags** (one required) + **comment** (always required):
+- `N` — News/Event (any external catalyst: macro, earnings, sector move)
+- `R` — Risk (portfolio-level concern: position size, drawdown, capital at risk)
+- `G` — Gut (intuition or any reason that doesn't fit N or R)
+
+Comment captures Daniel's reasoning in his own words — essential for recollection and pattern analysis. For price divergences, the comment naturally captures whether the difference was forced or a deliberate choice.
+
+**Reporting:**
+- P&L delta (actual vs system) derived at report time by comparing both journals — no manual tracking required
+- Tag performance breakdown: P&L delta per tag (N/R/G). Terminal bar format: `G ████████ 60% (-6.1%)` `N ███ 20% (+1.2%)`
+- Divergence quality score: % of divergences where Daniel outperformed the system, tracked over rolling 30d and 90d windows
+- Named insight: when tag performance is asymmetric, surface plain-language summary (e.g. "News divergences: +1.2% avg | Gut divergences: -6.1% avg — your edge is news, your drag is gut")
+- Win rate and divergence stats surfaced from first closed position / first divergence respectively. No minimum floor; "n/a — insufficient history" shown only when zero records exist.
 
 ### 5.6 Nightly Review (Terminal Prompts)
 

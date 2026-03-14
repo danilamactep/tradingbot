@@ -154,16 +154,26 @@ portfolio:
 
 ---
 
+## Journal — Schema
+
+```
+portfolios:  id | name ("actual", "system", ...) | starting_capital | created_at
+trades:      id | portfolio_id (FK) | ticker | date | entry | exit | stop | target | ...
+```
+
+Adding a new portfolio type = one INSERT into `portfolios`. No schema migration, no code change.
+
 ## Journal — JournalReader Interface
 
 ```python
 class JournalReader:
+    def __init__(self, portfolio_id: int): ...   # works identically for any portfolio
     def win_rate(self, ticker: str, last_n: int) -> float: ...
     def consecutive_losses(self, ticker: str) -> int: ...
     def signal_win_rate(self, signal_name: str, last_n: int) -> float: ...
-    def override_rate(self, last_n: int) -> float: ...
-    def override_quality_score(self, last_n: int) -> float: ...  # % of overrides that beat system rec
-    def override_pnl_by_tag(self, last_n: int) -> dict[str, float]: ...  # avg P&L delta per tag
+    def divergence_rate(self, last_n: int) -> float: ...
+    def divergence_quality_score(self, last_n: int) -> float: ...  # % of divergences where Daniel beat system
+    def divergence_pnl_by_tag(self, last_n: int) -> dict[str, float]: ...  # avg P&L delta per tag
 ```
 
 ---
