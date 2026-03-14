@@ -81,9 +81,17 @@ These apply to all sessions — BMAD elicitation, planning, coding, and design.
 3. **Treat transitions as hard stops.** "I'm good now," "let's move on," or equivalent signals completion — do not start the next topic until findings are written and `/clear` is suggested.
 4. **"Agree to everything else" means confirmed.** When Daniel says he agrees to everything except the items he explicitly commented on, treat all non-commented items as confirmed and write them to file.
 
+## Proactive Suggestions
+
+### Behavioral file updates
+When a new collaboration pattern, preference, or recurring friction emerges in a session, flag it and suggest adding it to CLAUDE.md, memory files, or agent customize files — whichever is appropriate. Scope: communication style, session rules, agent behavior corrections. Not design decisions (those go to artifacts).
+
+### Repetitive pattern detection
+When a multi-step action is performed a second time (a workflow sequence, a prompt pattern, a file transformation), flag it and suggest whether it belongs as a BMAD skill, a workflow command, or a standalone script.
+
 ### Keeping BMAD agents in sync
 
-Whenever this file (CLAUDE.md) is modified, cross-check all agent customize files under `_bmad/_config/agents/` and propagate any relevant changes to their `memories` arrays. Each agent should carry the rules that apply to its role:
+Whenever a behavioral rule is added or changed — in this file, in memory files, or anywhere else — cross-check all agent customize files under `_bmad/_config/agents/` and propagate relevant changes to their `memories` arrays. This applies universally, not only when CLAUDE.md is modified. Each agent should carry the rules that apply to its role:
 - **Planning agents** (pm, sm, architect, analyst): session hygiene rules
 - **Implementation agents** (dev, qa, quick-flow-solo-dev): TDD, coding standards, regression testing rules
 - **All agents**: any rule that applies universally regardless of phase
@@ -94,6 +102,17 @@ Whenever this file (CLAUDE.md) is modified, cross-check all agent customize file
 - After test plan is agreed and written (coding)
 - After architecture or design is agreed and written (coding)
 - After implementation plan is agreed and written (coding)
+
+## Memory Hygiene
+
+These rules keep `~/.claude/projects/.../memory/MEMORY.md` useful and within the 200-line system truncation limit.
+
+- **Don't duplicate artifacts.** Decisions committed to the product brief, PRD, architecture doc, or `docs/` are already persisted — do not copy them into memory.
+- **Session bullet lists are ephemeral.** After a session's decisions are written to an artifact, remove "Key Decisions This Session" lists from MEMORY.md. They go stale immediately.
+- **MEMORY.md max ~150 lines.** Content beyond 200 lines is silently truncated. Keep the index lean; put depth in named memory files (e.g., `project_decisions.md`, `feedback_pushback.md`).
+- **What belongs in MEMORY.md:** current phase/step, collaboration preference pointers, and a stale-artifact warning if an artifact was significantly revised but a downstream artifact hasn't been updated yet.
+- **What belongs in named memory files:** feedback rules, architectural decisions for quick recall, reference pointers.
+- **Prune at session end.** After all decisions are written to disk, remove ephemeral session content from MEMORY.md before suggesting `/clear`.
 
 ### Restoring BMAD context after `/clear`
 
