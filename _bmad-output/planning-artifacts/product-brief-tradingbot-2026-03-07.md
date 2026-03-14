@@ -210,7 +210,12 @@ The system journal is the system's "ideal" execution: it never second-guesses, a
 - **Read pattern**: read-all → compute → write-once (no concurrent access, no WAL mode needed)
 - **All writes transactional** — every journal write wrapped in an explicit SQLite transaction. On startup, run `PRAGMA integrity_check` and halt if journal is inconsistent.
 - Migrations managed by Alembic
-- JSON audit trail stored per recommendation: ticker, source file + hash, date range, RSI, MAs, ATR, VIX, SPY return, capital-at-risk pct, rules warned/blocked. See `docs/data-model-sketch.md`.
+**Trade reasoning — symmetric for both journals:**
+- **System reasoning snapshot** (stored per system trade): the full indicator context at recommendation time — ticker, source file + hash, date range, RSI, MAs, ATR, VIX, SPY return, capital-at-risk pct, rules warned/blocked. Answers: *why did the system act?*
+- **Human reasoning record** (stored per divergence): N/R/G tag + comment. Answers: *why did Daniel deviate?*
+
+Both are reasoning records attached to trade decisions. Format differs; concept is identical. Stored in a `reasoning` table linked to trades, with a `source` field (`system` | `human`) and a JSON `payload`. See `docs/data-model-sketch.md`.
+
 - Git tagging for backtest traceability: `git tag backtest-AAPL-2026-03-09`
 
 **JournalReader** (read-only wrapper) — methods: `win_rate`, `consecutive_losses`, `signal_win_rate`, `divergence_rate`, `divergence_quality_score`, `divergence_pnl_by_tag`. See `docs/data-model-sketch.md` for full interface.
@@ -398,24 +403,32 @@ Fields: `ticker`, `unrealized_pnl_pct`, `distance_to_target_pct`, `days_held`, `
 
 **Gap exit journal fields**: For gap-down exits, journal records all four values: stop price, open, day low, simulated fill, and gap flag (true/false). For manual resolutions, records stop price, target price, open, and `manual_resolution: true`.
 
-### 5.10 Go-Live Criteria (Earned Autonomy)
+### 5.10 Go-Live Criteria
 
-`auto_execute` is unlocked only when ALL four conditions are met:
+Moving from one phase to the next (replay → paper → live) requires ALL conditions met:
 
-1. System P&L ≥ +10% over trailing 3 months
+1. System P&L ≥ +10% over trailing 3 months of simulation
 2. System P&L > Daniel's actual P&L over same period
-3. No recent deterioration: last 2-week win rate ≥ 50% of 3-month average win rate. When this flags, the go-live report cross-references multi-period simulation to contextualize it
-4. Multi-period simulation across 5 years × 6-month windows reviewed and understood by Daniel
+3. No recent deterioration: last 2-week win rate ≥ 50% of 3-month average win rate. When this flags, cross-reference simulation results to contextualize
+4. Simulation across `max_history_years` at multiple window lengths reviewed and understood by Daniel
 
-**Stopping rules (auto-suspend):**
+**Stopping rules (suspend live trading):**
 - 15% drawdown from peak
 - 5 consecutive losses
 
-### 5.11 Backtest Calibration Document
+### 5.11 Strategy Simulation & Performance Reports
 
-Before paper trading begins, a single-strategy backtest summary is generated as a reference document. Required metrics:
+**Purpose**: Run the strategy across years of historical data at configurable window lengths to understand its behavior before committing real capital, and to track ongoing performance after going live. The decision to move to paper trading is made based on simulation results — there is no separate calibration step.
 
-- Total trades, average trades per month
+**Simulation engine:**
+- Replay across last `max_history_years` (default 5) of data
+- Configurable rolling window lengths: 6, 12, 18, 24 months — run all by default, or specify via `--window`
+- Includes portfolio-level positions: VUG and TLT simulated in parallel with active trades
+- Run on quarterly cadence (scheduled) + manual command + on-demand before any phase transition (e.g., moving to paper trading)
+
+**Performance metrics (captured per window, summarised across windows):**
+- Total trades, average trades per month, trade frequency (trades per week/month by market condition)
+- Time in trades vs in cash — % of period with capital deployed
 - Win rate
 - Quintiles of trade P&L, average win, average loss, best/worst trade
 - Longest winning streak, longest losing streak, average streak length
@@ -423,15 +436,11 @@ Before paper trading begins, a single-strategy backtest summary is generated as 
 - Average risk/reward ratio, average R-multiple per trade
 - Max drawdown, average drawdown, recovery time from max drawdown
 - Percentage stopped out, percentage hit target, percentage manual close
+- Expected performance range: median, best, worst across all windows — surfaces what "normal" looks like for this strategy
 
-### 5.12 Multi-Period Simulation
-
-- Automated replay across 5 years × 6-month rolling windows
-- Includes portfolio-level positions: stock index (VUG) and bonds (TLT) simulated in parallel with active trades
-- Run on quarterly cadence (scheduled) + manual command
-- **Output — two-section report:**
-  - **Section 1**: Per-period detail CSV (all metrics for each 6-month window)
-  - **Section 2**: Summary statistics CSV — median, best, worst for ALL metrics across periods
+**Output — two-section report:**
+- **Section 1**: Per-period detail CSV — all metrics for each window
+- **Section 2**: Summary statistics CSV — median, best, worst for every metric across all windows
 
 **Bond hedge effectiveness tracking** (per index-stop event):
 
@@ -448,25 +457,25 @@ Before paper trading begins, a single-strategy backtest summary is generated as 
 - **"Both stopped" scenario** (VUG and TLT stopped simultaneously or in close proximity): redeployment prompt is suppressed — no bond gains to compare. System shifts to VUG-only re-entry context nightly. When VUG re-entry signal fires, system presents paired recommendation: re-enter VUG + re-enter TLT on the same day. TLT re-enters as hedge alongside VUG, not independently.
 - **Post-MVP options noted**: (a) TLT-first re-entry if TNX momentum turns negative before VUG signal; (b) hold BIL during the gap period; (c) asymmetric VUG re-entry at reduced allocation initially.
 
-### 5.13 Strategy Comparison Report
-
-Compares up to 3 strategies side-by-side across the same historical periods. Max 3 enforced — error if more passed.
+**Strategy comparison mode**: run the same simulation against up to 3 strategies side-by-side across the same periods. Uses the same engine and same metrics as above — no separate system. Max 3 strategies enforced — error if more passed. Report presentation details (layout, column format, highlighting) deferred to PRD.
 
 ```
-python journal.py compare --ticker AAPL --period 2025 --strategies rsi_ma_v1 rsi_ma_v2 momentum_v1
+tradingbot simulate multi-period --strategies rsi_ma_v1 rsi_ma_v2 momentum_v1
 ```
 
-Output — two-section report:
-- **Section 1**: Per-period detail CSV — all metrics for each strategy, for each 6-month window
-- **Section 2**: Summary stats CSV — median/best/worst for every metric, per strategy
+**Post-MVP — additional simulation reports:**
+- **3/6/12 month live review**: periodic report on actual trading performance (not simulation) — number of trades, avg hold, avg gain over the period. Enables comparison of live performance vs simulation expectations.
+- **Holding duration analysis**: would holding positions longer have produced higher P&L? Requires defining "longer" relative to actual exit — complexity deferred.
+- **Trading frequency deviation**: strategy defines expected trade frequency; report tracks actual vs expected, flags sustained under/over-trading.
+- **Gains deployment policy**: when a stock trade closes profitably, should proceeds move to ETF (VUG) or sit in cash? Daniel leans toward ETF or cash equivalent. Policy to be defined before implementation.
 
-### 5.14 Perfect Trade Benchmark
+### 5.12 Perfect Trade Benchmark
 
 - **Definition**: buy at the lowest price in the period, sell at the subsequent highest price
 - **Capture ratio**: `realized_return ÷ perfect_return × 100%`
 - Reported alongside actual and system P&L to give aspirational upper bound
 
-### 5.15 Rebalancing Calculator
+### 5.13 Rebalancing Calculator
 
 - Calculates drift from target allocations and suggests rebalancing trades
 - Prices fetched automatically via Data Fetcher — no manual input

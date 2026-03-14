@@ -130,28 +130,6 @@ portfolio:
 
 ---
 
-## Journal — Audit Trail JSON (stored per recommendation in SQLite)
-
-```json
-{
-  "snapshot_id": "AAPL_2026-03-09",
-  "source_file": "historical_prices/AAPL.csv.gz",
-  "source_hash": "sha256:a3f2c1d4...",
-  "date_range": {"from": "2025-06-01", "to": "2026-03-09"},
-  "rsi_14": 28.3,
-  "ma_50": 181.20,
-  "ma_200": 175.40,
-  "atr_14": 8.20,
-  "atr_50": 7.10,
-  "vix": 22.1,
-  "spy_1d_return": -0.012,
-  "sector_5d_return": -0.032,
-  "capital_at_risk_pct": 0.038,
-  "rules_warned": ["high_vix"],
-  "rules_blocked": []
-}
-```
-
 ---
 
 ## Journal — Schema
@@ -159,9 +137,34 @@ portfolio:
 ```
 portfolios:  id | name ("actual", "system", ...) | starting_capital | created_at
 trades:      id | portfolio_id (FK) | ticker | date | entry | exit | stop | target | ...
+reasoning:   id | trade_id (FK) | source ("system" | "human") | payload (JSON)
+divergences: id | system_trade_id (FK) | actual_trade_id (FK) | type | reasoning_id (FK)
 ```
 
 Adding a new portfolio type = one INSERT into `portfolios`. No schema migration, no code change.
+
+**Reasoning payload — system:**
+```json
+{
+  "snapshot_id": "AAPL_2026-03-09",
+  "source_file": "historical_prices/AAPL.csv.gz",
+  "source_hash": "sha256:a3f2c1d4...",
+  "date_range": {"from": "2025-06-01", "to": "2026-03-09"},
+  "rsi_14": 28.3, "ma_50": 181.20, "ma_200": 175.40,
+  "atr_14": 8.20, "atr_50": 7.10, "vix": 22.1,
+  "spy_1d_return": -0.012, "capital_at_risk_pct": 0.038,
+  "rules_warned": ["high_vix"], "rules_blocked": []
+}
+```
+
+**Reasoning payload — human:**
+```json
+{
+  "tag": "G",
+  "comment": "felt overextended given macro",
+  "divergence_type": "ignored_sell"
+}
+```
 
 ## Journal — JournalReader Interface
 
