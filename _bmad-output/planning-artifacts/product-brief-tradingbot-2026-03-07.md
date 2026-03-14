@@ -189,20 +189,15 @@ Both values are displayed in reports and the nightly portfolio snapshot, clearly
 
 ### 5.4 Journal (SQLite + Alembic)
 
-**Purpose**: The journal exists to answer the central question: does the system's judgment outperform mine? It does this by maintaining two parallel trade records — one for what the system would have done, one for what Daniel actually did — and comparing them over time.
+**Purpose**: The journal exists to answer two related questions: (1) does the system's autonomous judgment outperform Daniel's discretionary trading? (2) on the trades Daniel did make, did his judgment add or destroy value versus what the system recommended? It does this by maintaining two fully independent trade records and comparing them over time.
 
-**Two journals, one database**: Both journals live in the same SQLite database using a single `trades` table with a `portfolio_id` column. A `portfolios` table defines each journal (`name`, `starting_capital`, `created_at`). Adding a new journal type — e.g., a post-MVP pure-system portfolio — requires one INSERT into `portfolios`, no schema migration, no code change. `JournalReader` takes a `portfolio_id` parameter and works identically for any journal. Same starting capital, same position sizing rules, same capital-at-risk cap. Portfolio state is derived independently per portfolio_id at the start of each nightly run.
+**Two journals, one database**: Both journals live in the same SQLite database using a single `trades` table with a `portfolio_id` column. A `portfolios` table defines each journal (`name`, `starting_capital`, `created_at`). Adding a new journal type requires one INSERT into `portfolios`, no schema migration, no code change. `JournalReader` takes a `portfolio_id` parameter and works identically for any journal.
 
-**System journal rules** — how the system journal is written each night:
+**Shared infrastructure**: Both journals use identical position sizing, stop/target logic, capital-at-risk cap, and starting capital. The only difference between journal types is the **picker** — the logic that decides which ticker to act on each night. Portfolio state is derived independently per `portfolio_id` at the start of each nightly run.
 
-| Daniel's action | System journal records |
-|----------------|----------------------|
-| Ignores buy recommendation | Skips — no entry recorded |
-| Buys (at own price) | Mirrors — same ticker, recommended entry/stop/target |
-| Voluntary early exit (no recommendation) | Keeps position — no exit recorded |
-| Ignores sell recommendation | Exits at recommended price |
+**System journal — fully autonomous**: The system journal always executes the top-ranked recommendation each night. It never waits for Daniel, never mirrors Daniel's decisions, and never skips because Daniel skipped. It independently manages its own positions from entry to exit based solely on system signals. Both journals may hold positions in the same ticker at the same time — they manage them independently.
 
-The system journal is the system's "ideal" execution: it never second-guesses, always follows its own signals. Both portfolios grow from the same starting point and diverge only through Daniel's decisions.
+**Post-MVP journal types**: additional pickers using the same shared infrastructure — second pick, random pick (baseline benchmark). One INSERT into `portfolios` per new journal type, no code change.
 
 **Hold recommendations stored**: every nightly recommendation for a currently held position (VUG, TLT, active trade) is journaled, including "hold." This enables bond hedge effectiveness queries (e.g., "did the system recommend selling TLT on the day VUG stopped?"). Unpositioned tickers with "no-action" are NOT stored — noise with no interpretive value.
 
@@ -220,27 +215,29 @@ Both are reasoning records attached to trade decisions. Format differs; concept 
 
 **JournalReader** (read-only wrapper) — methods: `win_rate`, `consecutive_losses`, `signal_win_rate`, `divergence_rate`, `divergence_quality_score`, `divergence_pnl_by_tag`. See `docs/data-model-sketch.md` for full interface.
 
-**Post-MVP**: third "pure system" journal (always buys top pick regardless of Daniel's actions) — enables ticker selection analysis: was it the ticker choice or the execution that drove the gap?
-
 ### 5.5 Divergence Tracking
 
-A divergence occurs whenever the actual journal and system journal differ. At settlement, the system detects all divergences automatically by comparing the two portfolios — Daniel never needs to manually flag a deviation.
+A divergence occurs whenever Daniel's action differs from the system's recommendation. At settlement, the system detects divergences automatically by comparing Daniel's journal entries against that night's recommendations — Daniel never needs to manually flag a deviation.
 
 **Four divergence types:**
 
 | Type | What happened | Reason required |
 |------|--------------|----------------|
-| Price divergence | Daniel bought at different price than recommended | Yes — was it forced (slippage, gap) or a deliberate choice? |
-| Early exit | Daniel sold voluntarily; system kept the position | Yes |
-| Ignored sell | System exited; Daniel held | Yes |
-| _(ignored buy — both skip)_ | No divergence | No |
+| `ignored_buy` | System recommended buy; Daniel didn't act | Yes |
+| `ignored_sell` | System recommended exit; Daniel held | Yes |
+| `independent_buy` | Daniel's entry price or stop differed from recommended | Conditional (see below) |
+| `independent_sell` | Daniel exited; system had no sell signal | Yes |
 
-**Divergence tags** (one required) + **comment** (always required):
+**Entry price vs. stop divergence handling:**
+- **Entry price difference**: at settlement, prompt — "Fill difference or deliberate price change?" If deliberate: reason tag + comment required. If fill/slippage: no reason required, recorded as execution noise. Fallback: threshold-based auto-classification if prompting proves too disruptive.
+- **Stop difference**: always deliberate — reason tag + comment always required. System auto-detects stop divergences from the trade record vs. recommendation.
+
+Note: the system journal always executes top pick autonomously — an ignored buy is a divergence between Daniel and the recommendation, not between the two journals. The journals are a performance benchmark; divergence tracking is a decision-quality tracker. These are separate comparisons.
+
+**Divergence tags** (one required on deliberate divergences) + **comment** (always required):
 - `N` — News/Event (any external catalyst: macro, earnings, sector move)
 - `R` — Risk (portfolio-level concern: position size, drawdown, capital at risk)
 - `G` — Gut (intuition or any reason that doesn't fit N or R)
-
-Comment captures Daniel's reasoning in his own words — essential for recollection and pattern analysis. For price divergences, the comment naturally captures whether the difference was forced or a deliberate choice.
 
 **Reporting:**
 - P&L delta (actual vs system) derived at report time by comparing both journals — no manual tracking required
