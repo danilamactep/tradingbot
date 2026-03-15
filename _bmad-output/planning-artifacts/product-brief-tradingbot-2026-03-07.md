@@ -173,6 +173,8 @@ Tickers and portfolio allocations are unified in a single file — `tickers.yaml
 - `stop: ytd_protection` → index ETF: allocation-based sizing, YTD gain protection formula
 - `stop: trailing_15pct` → bond ETF: allocation-based sizing, 15% trailing stop
 
+**Config validation — hard failure** on any of the following at startup: both `reference_index` and `stop` present on the same instrument; neither present; unrecognized `stop` value. Clear error message identifying the offending instrument.
+
 **Portfolio state derivation** — constructed at the start of each nightly run from journal history. Never stored redundantly:
 
 ```
@@ -195,11 +197,11 @@ Both values are displayed in reports and the nightly portfolio snapshot, clearly
 
 **Shared infrastructure**: Both journals use identical position sizing, stop/target logic, capital-at-risk cap, and starting capital. The only difference between journal types is the **picker** — the logic that decides which ticker to act on each night. Portfolio state is derived independently per `portfolio_id` at the start of each nightly run.
 
-**System journal — fully autonomous**: The system journal always executes the top-ranked recommendation each night. It never waits for Daniel, never mirrors Daniel's decisions, and never skips because Daniel skipped. It independently manages its own positions from entry to exit based solely on system signals. Both journals may hold positions in the same ticker at the same time — they manage them independently.
+**System journal — fully autonomous**: The system journal always executes the top-ranked recommendation each night. It never waits for Daniel, never mirrors Daniel's decisions, and never skips because Daniel skipped. It independently manages its own positions from entry to exit based solely on system signals. Both journals may hold positions in the same ticker at the same time — they manage them independently. The system journal operates on the same nightly cadence as Daniel — cash from exits is available for redeployment that same night (staged), executed the next trading day.
 
 **Post-MVP journal types**: additional pickers using the same shared infrastructure — second pick, random pick (baseline benchmark). One INSERT into `portfolios` per new journal type, no code change.
 
-**Hold recommendations stored**: every nightly recommendation for a currently held position (VUG, TLT, active trade) is journaled, including "hold." This enables bond hedge effectiveness queries (e.g., "did the system recommend selling TLT on the day VUG stopped?"). Unpositioned tickers with "no-action" are NOT stored — noise with no interpretive value.
+**Journaled recommendations**: only actionable recommendations (buy/sell) are stored. Hold and no-action are not journaled. Bond hedge effectiveness queries (e.g., "did the system recommend selling TLT on the day VUG stopped?") are answered by the absence of a sell record on that date — no hold record needed.
 
 **Technical:**
 - **Read pattern**: read-all → compute → write-once (no concurrent access, no WAL mode needed)
@@ -254,20 +256,31 @@ The nightly command has two sequential phases in live mode:
 
    **Settlement prompt flow (live mode):**
 
-   For each recommendation from the previous night:
-   ```
-   AAPL was recommended yesterday. Execution price? (price / skipped / [enter] = not submitted)
-   > skipped
-   Reason: N=News/Event  R=Risk  G=Gut
-   > G
-   Comment: felt overextended given macro
-   ```
+   **Step 1 — Yesterday's recommendations** (one-day-only staged orders):
+
+   For each recommendation from the previous night, system first checks OHLCV to determine if the recommended entry price was reachable yesterday:
+   - **Price not reachable** (entry outside yesterday's high/low range) → system states assumption:
+     ```
+     AAPL was recommended at $171.50 — price not reached yesterday (range: $174.20–$176.80).
+     Assumed: not submitted. Correct? [enter] = yes / type to override
+     ```
+   - **Price reachable** (entry within yesterday's range) → prompt for outcome:
+     ```
+     AAPL was recommended at $171.50 — price was reachable yesterday.
+     Execution price? (price / skipped / [enter] = not submitted)
+     > skipped
+     Reason: N=News/Event  R=Risk  G=Gut
+     > G
+     Comment: felt overextended given macro
+     ```
    - `execution_price` entered → **executed** → logged as open or closed position
-   - `skipped` → logged as skip with reason + comment (applies to SELL on open positions; BUY skips are post-MVP)
-   - `[enter]` / not submitted → ignored; no journal entry (BUY recommendations only)
+   - `skipped` → logged as divergence with reason + comment
+   - `[enter]` / not submitted → ignored; no journal entry
    - Orders are one-day-only — no carry-forward
 
-   After recommendation outcomes, system checks OHLCV for all open positions and surfaces detected limit triggers:
+   **Step 2 — Open position triggers** (held positions, any duration):
+
+   System checks OHLCV for all currently held positions and surfaces detected stop/target triggers:
    ```
    ⚠ AAPL — stop level $168.00 breached yesterday (low: $164.20)
    Execution price?
@@ -296,8 +309,8 @@ Paper and replay modes skip the CSV input entirely — fills are simulated via f
 
 **Missed night recovery:**
 If Daniel misses one or more nights, the system detects the gap by comparing today's date to the last journal entry date. On next run, it steps through each missed day in order (oldest first) before running tonight's review:
-- **Settlement phase**: runs normally per missed day using that day's OHLCV for stop detection
-- **Staging phase**: shows what the system would have recommended that night; Daniel reports whether anything was acted on
+- **Settlement phase**: runs identically to normal settlement — OHLCV stop detection, execution price prompts for any recommendations that were reachable, open position trigger detection. Daniel cannot advance to the next day without completing each day's settlement prompts.
+- **Staging phase**: shows what the system would have recommended that night; same execution price prompts as normal staging — Daniel enters fills for anything acted on, or confirms nothing was submitted.
 - All missed-day sessions are marked `recovery_mode: true` in the journal for auditability
 - After all missed days are processed, tonight's nightly review runs as normal
 
@@ -378,6 +391,12 @@ Fields: `ticker`, `unrealized_pnl_pct`, `distance_to_target_pct`, `days_held`, `
 
 **Key distinction**: Automated replay tests the strategy. Paper trading tests strategy + human behavior. These answer different questions.
 
+**Phase transition criteria**: judgment calls informed by simulation reports (§5.11) — no fixed numeric thresholds. Review win rate, drawdown, and period-by-period performance across window lengths before advancing.
+
+**Stopping rules (suspend live trading):**
+- 15% drawdown from peak
+- 5 consecutive losses
+
 | Mode | Purpose | Human decisions |
 |------|---------|----------------|
 | **Automated replay** | Strategy validation across historical periods | None — fully automated |
@@ -391,29 +410,17 @@ Fields: `ticker`, `unrealized_pnl_pct`, `distance_to_target_pct`, `days_held`, `
 | Scenario | Fill Price | Gap Flag |
 |----------|-----------|----------|
 | Normal stop hit (open > stop, trades down to stop) | Stop price | false |
-| Gap down past stop (open < stop) | `(min(stop, open) + low) / 2` | true |
+| Gap down past stop (open < stop) | `(open + low) / 2` — simulated gap fill; midpoint of open and day low approximates average execution across the gap move | true |
 | Normal target hit (open < target, trades up to target) | Target price | false |
 | Gap up past target (open > target) | Target price | false |
 | **Both hit, gap up** (open > target, stop also breached) | Target price (hit first) | false |
-| **Both hit, gap down** (open < stop, target also hit) | Gap fill price (stop hit first) | true |
+| **Both hit, gap down** (open < stop, target also hit) | Simulated gap fill (stop hit first) | true |
 | **Both hit, no gap** (open between stop and target) | Manual entry required | — |
 
 **Gap exit journal fields**: For gap-down exits, journal records all four values: stop price, open, day low, simulated fill, and gap flag (true/false). For manual resolutions, records stop price, target price, open, and `manual_resolution: true`.
 
-### 5.10 Go-Live Criteria
 
-Moving from one phase to the next (replay → paper → live) requires ALL conditions met:
-
-1. System P&L ≥ +10% over trailing 3 months of simulation
-2. System P&L > Daniel's actual P&L over same period
-3. No recent deterioration: last 2-week win rate ≥ 50% of 3-month average win rate. When this flags, cross-reference simulation results to contextualize
-4. Simulation across `max_history_years` at multiple window lengths reviewed and understood by Daniel
-
-**Stopping rules (suspend live trading):**
-- 15% drawdown from peak
-- 5 consecutive losses
-
-### 5.11 Strategy Simulation & Performance Reports
+### 5.10 Strategy Simulation & Performance Reports
 
 **Purpose**: Run the strategy across years of historical data at configurable window lengths to understand its behavior before committing real capital, and to track ongoing performance after going live. The decision to move to paper trading is made based on simulation results — there is no separate calibration step.
 
@@ -466,18 +473,18 @@ tradingbot simulate multi-period --strategies rsi_ma_v1 rsi_ma_v2 momentum_v1
 - **Trading frequency deviation**: strategy defines expected trade frequency; report tracks actual vs expected, flags sustained under/over-trading.
 - **Gains deployment policy**: when a stock trade closes profitably, should proceeds move to ETF (VUG) or sit in cash? Daniel leans toward ETF or cash equivalent. Policy to be defined before implementation.
 
-### 5.12 Perfect Trade Benchmark
+### 5.11 Perfect Trade Benchmark
 
 - **Definition**: buy at the lowest price in the period, sell at the subsequent highest price
 - **Capture ratio**: `realized_return ÷ perfect_return × 100%`
 - Reported alongside actual and system P&L to give aspirational upper bound
 
-### 5.13 Rebalancing Calculator
+### 5.12 Rebalancing Calculator
 
 - Calculates drift from target allocations and suggests rebalancing trades
 - Prices fetched automatically via Data Fetcher — no manual input
 - Rebalancing events modeled as part of multi-period simulation — same component, historical data fed one day at a time
-- Operational report reuses the same logic: `python portfolio.py rebalance --preview`
+- Operational report reuses the same logic: `tradingbot portfolio rebalance --preview`
 - Run on quarterly cadence (non-blocking nightly notification) + manual command
 
 ---
@@ -498,7 +505,7 @@ The system generates recommendations and stop alerts. Daniel executes all orders
 
 **Bond stop**: 15% trailing stop from purchase high. Rationale: TLT's normal rate-driven fluctuations are ±5-10%; 15% catches structural regime failures (e.g., 2022 rate hike cycle) without triggering on noise.
 
-**Active trade capital-at-risk cap**: 5% of total portfolio value across all active positions combined.
+**Active trade capital-at-risk cap**: 5% of `risk_basis` across all active positions combined. `risk_basis` (cash + cost basis of open positions) is used — not `market_value` — so the cap is stable and unaffected by unrealized P&L.
 
 **Bond redeployment trigger rule**: When the index stop triggers, prompt redeployment of bond gains only when:
 ```
@@ -587,7 +594,7 @@ tradingbot/
 
 | Event | Rule |
 |-------|------|
-| Stop hit | Exit at stop price (or gap fill price) |
+| Stop hit | Exit at stop price (or simulated gap fill if gapped past stop) |
 | Target hit | Exit at target price |
 | **Re-entry after stop** | **5 trading day cooldown — no re-entry on same ticker regardless of signal** |
 | Re-entry after cooldown | Normal signal evaluation resumes |
@@ -677,7 +684,7 @@ When `fed_stance = hiking` or `TNX_20d_momentum > 0`: hold BIL instead of TLT
 
 ## 11. Open Questions / Deferred
 
-- ~~Q6~~ **RESOLVED**: Ambiguous exit (same-day stop + target) — fetch intraday data to determine sequence; hard failure if fetch fails.
+- ~~Q6~~ **RESOLVED**: Ambiguous exit (same-day stop + target) — resolved via OHLCV gap detection (open > target → target first; open < stop → stop first; open between → manual prompt). No intraday data fetch. See §5.6.
 - ~~**Exit and re-entry strategies**~~ **RESOLVED**: Defined in section 10 for active stocks, index ETF (VUG), and bonds ETF (TLT).
 - TOON format: noted as future LLM exchange format; JSON used for now
 
@@ -702,7 +709,7 @@ When `fed_stance = hiking` or `TNX_20d_momentum > 0`: hold BIL instead of TLT
 | Future Backward | Go-live criteria; multi-period simulation |
 | Extreme Cases | Bond allocation; index stop formula; rebalancing calculator |
 | Critical Perspective | Terminal prompts confirmed; 5% active cap confirmed; index handled by system |
-| Socratic Questioning (#41) | Multi-period simulation cadence; quarterly rebalancing; bonds rationale; Q6 resolved (intraday fetch) |
+| Socratic Questioning (#41) | Multi-period simulation cadence; quarterly rebalancing; bonds rationale; Q6 resolved (OHLCV gap detection + manual prompt) |
 | Rubber Duck Debugging Evolved (#21) | Settlement prompt flow; unified trade lifecycle; 3-tag override system (N/R/G) with required comment; ranking formula with EV + Conviction alternatives |
 | Algorithm Olympics (#22) | Ranking formula: R/R × win_rate for MVP; EV and Conviction computed alongside for periodic report comparison |
 | Random Input Stimulus (#28) | Confidence signal red/yellow/green (post-MVP); LLM-assisted journal analysis (post-MVP); pre-nightly checklist (post-MVP) |
