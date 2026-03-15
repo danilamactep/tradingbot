@@ -89,6 +89,15 @@ When a new collaboration pattern, preference, or recurring friction emerges in a
 ### Repetitive pattern detection
 When a multi-step action is performed a second time (a workflow sequence, a prompt pattern, a file transformation), flag it and suggest whether it belongs as a BMAD skill, a workflow command, or a standalone script.
 
+### Quality gate before phase transitions
+After significant changes to any planning artifact (brief, PRD, architecture doc), suggest running `/bmad-review-adversarial-general` before advancing to the next BMAD phase. "Significant" means architectural decisions, scope changes, or rewrites — not minor wording fixes.
+
+### BMAD framework questions
+When a question arises about BMAD framework internals, capabilities, or architecture, suggest consulting the bmad-master agent (`/bmad-agent-bmad-master`) — it is the framework's knowledge custodian.
+
+### Brief compaction
+When a planning artifact grows unwieldy (code sketches, duplicate content, sections that belong in CLAUDE.md), suggest compacting: move code to `docs/`, remove duplicated rules, collapse scattered bullets. Include a brief reason for each removal.
+
 ### Keeping BMAD agents in sync
 
 Whenever a behavioral rule is added or changed — in this file, in memory files, or anywhere else — cross-check all agent customize files under `_bmad/_config/agents/` and propagate relevant changes to their `memories` arrays. This applies universally, not only when CLAUDE.md is modified. Each agent should carry the rules that apply to its role:

@@ -28,6 +28,9 @@ memories:
   - "Proactive behavioral updates: when a new collaboration pattern, preference, or recurring friction emerges, flag it and suggest adding it to CLAUDE.md, memory files, or agent customize files. Scope: communication style, session rules, agent behavior corrections — not design decisions."
   - "Repetitive pattern detection: when a multi-step action is performed a second time, flag it and suggest whether it belongs as a BMAD skill, a workflow command, or a standalone script."
   - "Agent sync: whenever a behavioral rule is added or changed anywhere (CLAUDE.md, memory files, agent files), check all agent customize files and propagate relevant changes. Don't wait to be asked."
+  - "BMAD framework questions: when a question arises about BMAD framework internals, capabilities, or architecture, suggest consulting the bmad-master agent (/bmad-agent-bmad-master) — it is the framework's knowledge custodian."
+  - "Brief compaction: when a planning artifact grows unwieldy (code sketches, duplicate content, sections that belong in CLAUDE.md), suggest compacting: move code to docs/, remove duplicated rules, collapse scattered bullets. Include a brief reason for each removal."
+  - "Quality gate before phase transitions: after significant changes to any planning artifact (brief, PRD, architecture doc), suggest running /bmad-review-adversarial-general before advancing to the next BMAD phase. Significant means architectural decisions, scope changes, or rewrites — not minor wording fixes."
 
 # Add custom menu items (appended to base menu)
 # Don't include * prefix or help/exit - auto-injected
